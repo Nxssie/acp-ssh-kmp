@@ -1,29 +1,30 @@
 # acp-ssh-kmp
 
-Cliente Android (Kotlin Multiplatform) que **gestiona una terminal SSH interactiva**: conecta a
-tu servidor, abre un shell con PTY (`xterm-256color`) y renderiza el TUI (tmux, `claude`, …) en
-Compose. Pensado para manejar desde el móvil un setup tipo `tmux new -As claude-terminal`.
+Android client (Kotlin Multiplatform) that **manages an interactive SSH terminal**: connects to
+your server, opens a shell with a PTY (`xterm-256color`) and renders the TUI (tmux, `claude`, …) in
+Compose. Built to drive a `tmux new -As claude-terminal`-style setup from your phone.
 
-> Originalmente el proyecto apuntaba a **ACP (Agent Client Protocol)** sobre SSH (chat con agente
-> por `exec` + NDJSON). Ese objetivo queda como fase futura sobre el mismo `TerminalHost`; el
-> producto actual es el terminal interactivo. Detalle y desviaciones en `PLAN.md`.
+> The project originally targeted **ACP (Agent Client Protocol)** over SSH (agent chat via
+> `exec` + NDJSON). That goal remains a future phase on top of the same `TerminalHost`; the
+> current product is the interactive terminal. Details and deviations in `PLAN.md`.
 
-## Módulos
+## Modules
 
-- `common` — KMP: `androidTarget()` + `jvm("desktop")`. UI Compose compartida + **emulador de
-  terminal** puro (`terminal/`) + contrato `session/TerminalHost.kt`.
-- `android` — App Android (SSHJ + PTY + TOFU host keys + clave cifrada con AndroidX Security).
-  APK debug: `:android:assembleDebug`.
-- `desktop` — CLI de validación SSH (`--test-ssh`) + app desktop con la misma UI.
+- `common` — KMP: `androidTarget()` + `jvm("desktop")`. Shared Compose UI + a pure **terminal
+  emulator** (`terminal/`) + the `session/TerminalHost.kt` contract.
+- `android` — Android app (SSHJ + PTY + TOFU host keys + private key encrypted with AndroidX
+  Security). Debug APK: `:android:assembleDebug`.
+- `desktop` — SSH validation CLI (`--test-ssh`) + desktop app sharing the same UI.
 
-## Uso (Android)
+## Usage (Android)
 
-1. Compila e instala el APK debug.
-2. Introduce host, puerto, usuario y **pega tu clave privada PEM** (sin passphrase por ahora).
-3. Comando remoto por defecto: `tmux new -As claude-terminal` (vacío = shell normal).
-4. Primera conexión → confirma la huella del host (TOFU); se guarda cifrada.
-5. Barra inferior: línea de entrada, teclas especiales (Esc, Tab, Ctrl+C/D/Z/L/U/W, flechas,
-   Home/End). Rotar el móvil → window-change al remoto (tmux hace reflow).
+1. Build and install the debug APK.
+2. Enter host, port, username and **paste your private key in PEM format** (no passphrase support
+   yet).
+3. Default remote command: `tmux new -As claude-terminal` (empty = plain shell).
+4. First connection → confirm the host fingerprint (TOFU); it gets saved encrypted.
+5. Bottom bar: input line, special keys (Esc, Tab, Ctrl+C/D/Z/L/U/W, arrows, Home/End). Rotating
+   the phone sends a window-change to the remote end (tmux reflows).
 
 ## Stack
 
@@ -31,24 +32,25 @@ Kotlin 2.3.20 · AGP 8.9.0 · Compose Multiplatform 1.10.1 · Gradle 8.13 · kot
 kotlinx-coroutines 1.11.0 · kotlinx-serialization 1.11.0 · SSHJ 0.40.0 ·
 androidx.security:security-crypto 1.1.0-alpha06.
 
-## Requisitos
+## Requirements
 
-- JDK 21 para ejecutar Gradle (Gradle 8.13 no soporta Java 25 como JVM de ejecución).
-  `mise` con `java@21` y `JAVA_HOME` apuntando ahí.
-- Android SDK con `platforms;android-35` (ruta en `local.properties` o `ANDROID_HOME`).
-- En el host remoto: nada especial — cualquier shell + `tmux` si quieres el setup `claude-terminal`.
+- JDK 21 to run Gradle (Gradle 8.13 doesn't support Java 25 as the execution JVM).
+  `mise` with `java@21` and `JAVA_HOME` pointing to it.
+- Android SDK with `platforms;android-35` (path in `local.properties` or `ANDROID_HOME`).
+- On the remote host: nothing special — any shell + `tmux` if you want the `claude-terminal`
+  setup.
 
-## Validación SSH (Fase 1, CLI desktop)
+## SSH validation (Phase 1, desktop CLI)
 
 ```bash
-scripts/setup-sshd.sh        # levanta sshd de prueba local en :2223 (claves efímeras)
-scripts/validate-ssh.sh      # conector SSHJ: echo hola por streams + exit status
-scripts/validate-ssh.sh 'seq 1 200000 | tail -1'   # stream grande
+scripts/setup-sshd.sh        # starts a local test sshd on :2223 (ephemeral keys)
+scripts/validate-ssh.sh      # SSHJ connector: echo hello over streams + exit status
+scripts/validate-ssh.sh 'seq 1 200000 | tail -1'   # large stream
 ```
 
-Alternativa directa:
+Direct alternative:
 
 ```bash
 ./gradlew :desktop:run --args="--test-ssh --host H --port 22 --user U \
-  --key /ruta/clave --known-hosts /ruta/known_hosts --command 'echo hola'"
+  --key /path/to/key --known-hosts /path/to/known_hosts --command 'echo hello'"
 ```
