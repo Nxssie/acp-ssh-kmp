@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,7 +49,7 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
     private var sessionScope: CoroutineScope? = null
     private var client: SSHClient? = null
     private var shell: Session.Shell? = null
-    @Volatile private var writer: OutputStream? = null
+    @Volatile private var writeChannel: Channel<ByteArray>? = null
 
     override fun connect(config: TerminalConfig) {
         disconnect()
@@ -75,13 +76,14 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
                 val sh = session.startShell()
                 client = ssh
                 shell = sh
-                writer = sh.outputStream
-                emulator.onResponse = { out -> runCatching { sh.outputStream.write(out); sh.outputStream.flush() } }
+                val channel = Channel<ByteArray>(Channel.UNLIMITED)
+                writeChannel = channel
+                launch(Dispatchers.IO) { writeLoop(channel, sh.outputStream) }
+                emulator.onResponse = { out -> channel.trySend(out) }
                 _connection.value = ConnectionState(ConnectStatus.CONNECTED)
 
                 config.remoteCommand?.takeIf { it.isNotBlank() }?.let { cmd ->
-                    sh.outputStream.write((cmd + "\r").encodeToByteArray())
-                    sh.outputStream.flush()
+                    channel.trySend((cmd + "\r").encodeToByteArray())
                 }
 
                 launch { readLoop(sh.inputStream) }
@@ -90,8 +92,21 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
                 runCatching { client?.disconnect() }
                 client = null
                 shell = null
-                writer = null
+                writeChannel?.close()
+                writeChannel = null
                 _connection.value = ConnectionState(ConnectStatus.FAILED, error = e.message ?: e.toString())
+            }
+        }
+    }
+
+    /** Único consumidor del canal de escritura: serializa todos los writes al stdin remoto. */
+    private suspend fun writeLoop(channel: Channel<ByteArray>, out: OutputStream) {
+        for (bytes in channel) {
+            try {
+                out.write(bytes)
+                out.flush()
+            } catch (e: IOException) {
+                break
             }
         }
     }
@@ -132,11 +147,12 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
         }
         sessionScope?.cancel()
         sessionScope = null
+        writeChannel?.close()
+        writeChannel = null
         runCatching { shell?.close() }
         runCatching { client?.disconnect() }
         shell = null
         client = null
-        writer = null
     }
 
     override fun acceptHostKey() = verifier.acceptHostKey()
@@ -144,15 +160,7 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
     override fun rejectHostKey() = verifier.rejectHostKey()
 
     override fun send(bytes: ByteArray) {
-        val out = writer ?: return
-        scope.launch(Dispatchers.IO) {
-            try {
-                out.write(bytes)
-                out.flush()
-            } catch (e: IOException) {
-                // canal cerrado: ignorar
-            }
-        }
+        writeChannel?.trySend(bytes)
     }
 
     override fun send(text: String) = send(text.encodeToByteArray())
@@ -168,11 +176,12 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
     override fun disconnect() {
         sessionScope?.cancel()
         sessionScope = null
+        writeChannel?.close()
+        writeChannel = null
         runCatching { shell?.close() }
         runCatching { client?.disconnect() }
         shell = null
         client = null
-        writer = null
         _connection.value = ConnectionState(ConnectStatus.DISCONNECTED)
     }
 

@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -35,6 +36,7 @@ class DesktopSshTerminalHost : TerminalHost {
     private var session: SshSession? = null
     private var shell: PtyShell? = null
     private var lastConfig: TerminalConfig? = null
+    private var writeChannel: Channel<ByteArray>? = null
 
     override fun connect(config: TerminalConfig) {
         disconnect()
@@ -47,12 +49,14 @@ class DesktopSshTerminalHost : TerminalHost {
                 val sh = ssh.openShell()
                 session = ssh
                 shell = sh
-                emulator.onResponse = { out -> runCatching { sh.stdin.write(out); sh.stdin.flush() } }
+                val channel = Channel<ByteArray>(Channel.UNLIMITED)
+                writeChannel = channel
+                launch { writeLoop(channel, sh) }
+                emulator.onResponse = { out -> channel.trySend(out) }
                 _connection.value = ConnectionState(ConnectStatus.CONNECTED)
 
                 config.remoteCommand?.takeIf { it.isNotBlank() }?.let { cmd ->
-                    sh.stdin.write((cmd + "\r").encodeToByteArray())
-                    sh.stdin.flush()
+                    channel.trySend((cmd + "\r").encodeToByteArray())
                 }
 
                 launch { readLoop(sh) }
@@ -61,7 +65,21 @@ class DesktopSshTerminalHost : TerminalHost {
                 runCatching { session?.close() }
                 session = null
                 shell = null
+                writeChannel?.close()
+                writeChannel = null
                 _connection.value = ConnectionState(ConnectStatus.FAILED, error = e.message ?: e.toString())
+            }
+        }
+    }
+
+    /** Único consumidor del canal de escritura: serializa todos los writes al stdin remoto. */
+    private suspend fun writeLoop(channel: Channel<ByteArray>, sh: PtyShell) {
+        for (bytes in channel) {
+            try {
+                sh.stdin.write(bytes)
+                sh.stdin.flush()
+            } catch (e: Exception) {
+                break
             }
         }
     }
@@ -98,6 +116,8 @@ class DesktopSshTerminalHost : TerminalHost {
         }
         job?.cancel()
         job = null
+        writeChannel?.close()
+        writeChannel = null
         runCatching { shell?.close() }
         runCatching { session?.close() }
         shell = null
@@ -109,10 +129,7 @@ class DesktopSshTerminalHost : TerminalHost {
     override fun rejectHostKey() = Unit
 
     override fun send(bytes: ByteArray) {
-        val sh = shell ?: return
-        scope.launch {
-            runCatching { sh.stdin.write(bytes); sh.stdin.flush() }
-        }
+        writeChannel?.trySend(bytes)
     }
 
     override fun send(text: String) = send(text.encodeToByteArray())
@@ -128,6 +145,8 @@ class DesktopSshTerminalHost : TerminalHost {
     override fun disconnect() {
         job?.cancel()
         job = null
+        writeChannel?.close()
+        writeChannel = null
         runCatching { shell?.close() }
         runCatching { session?.close() }
         shell = null
