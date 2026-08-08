@@ -1,6 +1,7 @@
 package com.nxssie.acpssh
 
 import com.nxssie.acpssh.session.PendingHostKey
+import net.schmizz.sshj.common.Buffer
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import java.security.MessageDigest
 import java.security.PublicKey
@@ -55,8 +56,13 @@ class TofuHostKeyVerifier(
         decision?.countDown()
     }
 
+    /**
+     * SHA-256 sobre el blob de la clave en formato wire SSH (no `key.encoded`, que
+     * es la codificación X.509 de Java y nunca coincide con `ssh-keygen -lf`).
+     */
     private fun fingerprint(key: PublicKey): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(key.encoded)
+        val blob = Buffer.PlainBuffer().putPublicKey(key).compactData
+        val digest = MessageDigest.getInstance("SHA-256").digest(blob)
         val b64 = Base64.getEncoder().withoutPadding().encodeToString(digest)
         return "SHA256:$b64"
     }
