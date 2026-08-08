@@ -1,0 +1,29 @@
+[versions]
+# Las versiones de plugins (kotlin/agp/compose) viven en gradle.properties
+# (leídas por pluginManagement); mantener en sync.
+compose = "1.11.1"
+coroutines = "1.11.0"
+serialization = "1.11.0"
+kotlinxIo = "0.9.1"
+sshj = "0.40.0"
+activityCompose = "1.13.0"
+securityCrypto = "1.1.0-alpha06"
+coroutinesAndroid = "1.11.0"
+# Material3 tiene tren de versiones propio (desacoplado de CMP): no existe
+# estable 1.11.x; 1.9.0 es la última estable y es compatible con CMP 1.11.
+composeMaterial3 = "1.9.0"
+
+[libraries]
+compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "compose" }
+compose-foundation = { module = "org.jetbrains.compose.foundation:foundation", version.ref = "compose" }
+compose-material3 = { module = "org.jetbrains.compose.material3:material3", version.ref = "composeMaterial3" }
+
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+kotlinx-io-core = { module = "org.jetbrains.kotlinx:kotlinx-io-core", version.ref = "kotlinxIo" }
+
+sshj = { module = "com.hierynomus:sshj", version.ref = "sshj" }
+
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "securityCrypto" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutinesAndroid" }
