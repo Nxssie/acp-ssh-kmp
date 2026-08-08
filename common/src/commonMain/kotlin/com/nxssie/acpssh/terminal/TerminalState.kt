@@ -126,6 +126,8 @@ internal class TerminalBuffer(var cols: Int, var rows: Int) {
     }
 
     fun insertLines(row: Int, n: Int, blank: CellStyle) {
+        // Fuera de la región de scroll: sin efecto (mismo comportamiento que xterm).
+        if (row !in scrollTop..scrollBottom) return
         val count = n.coerceIn(1, scrollBottom - row + 1)
         for (r in scrollBottom downTo row + count) {
             chars[r - count].copyInto(chars[r])
@@ -138,6 +140,8 @@ internal class TerminalBuffer(var cols: Int, var rows: Int) {
     }
 
     fun deleteLines(row: Int, n: Int, blank: CellStyle) {
+        // Fuera de la región de scroll: sin efecto (mismo comportamiento que xterm).
+        if (row !in scrollTop..scrollBottom) return
         val count = n.coerceIn(1, scrollBottom - row + 1)
         for (r in row..scrollBottom - count) {
             chars[r + count].copyInto(chars[r])
