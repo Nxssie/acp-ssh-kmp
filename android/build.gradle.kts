@@ -1,7 +1,19 @@
+import java.io.ByteArrayOutputStream
+
 plugins {
     id("com.android.application")
     kotlin("plugin.compose")
     id("org.jetbrains.compose")
+}
+
+/** Nº de commits como versionCode: crece con cada build, sin llevarlo a mano. */
+fun gitCommitCount(): Int {
+    val out = ByteArrayOutputStream()
+    exec {
+        commandLine("git", "rev-list", "--count", "HEAD")
+        standardOutput = out
+    }
+    return out.toString().trim().toIntOrNull() ?: 1
 }
 
 android {
@@ -12,12 +24,24 @@ android {
         applicationId = "com.nxssie.acpssh"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
+        versionCode = gitCommitCount()
         versionName = "0.1.0"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            // Firma de debug fija y committeada: sin esto, cada runner de CI genera
+            // un keystore nuevo con clave distinta y el APK deja de poder
+            // instalarse "encima" del anterior (INSTALL_FAILED_UPDATE_INCOMPATIBLE).
+            storeFile = file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 }
 
