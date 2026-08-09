@@ -197,5 +197,128 @@ common/desktopMain (JVM)
 ### Deuda técnica pendiente
 
 - ACP (Fases 2–5 del plan original) queda como fase futura sobre el mismo `TerminalHost`/SSHJ.
-- Import de clave por SAF (selector de archivos) en vez de pegar PEM.
+- ~~Import de clave por SAF (selector de archivos) en vez de pegar PEM.~~ Hecho (2026-08-09):
+  export/import de `.pem` vía SAF (Android) / `JFileChooser` (desktop), ver `io/PemFileIo.kt`.
 - Scrollback, ratón, bracketed paste (el emulador ya expone `bracketedPaste`), parpadeo de cursor.
+
+## Retomar ACP — plan de modo chat (2026-08-09, borrador)
+
+> Estado: planificado, sin código. Decisiones cerradas con el usuario antes de escribir esto:
+> agente = `claude-code-acp`; UI = terminal actual **y** chat nuevo, seleccionable (no reemplaza
+> nada); persistencia de sesión ACP desde el v1 (sobrevive a que Android mate el proceso en
+> background / reconexión de red).
+
+### Por qué no es un ajuste de estilos
+
+Lo que hoy se ve al conectar (`tmux new -As claude-terminal`) es la CLI `claude` interactiva
+renderizada carácter a carácter por el emulador VT100 propio. Una "UI tipo chat" real necesita que
+el remoto hable **ACP (JSON-RPC 2.0 sobre NDJSON)** en vez de imprimir una TUI — son dos protocolos
+de transporte distintos, no una cuestión de estilos de `TerminalScreen`. Implica reactivar las
+Fases 2–5 del plan original, ahora sobre el código que existe tras el pivote a terminal.
+
+### Qué se reutiliza tal cual
+
+- Conexión SSH, TOFU (Android) / `known_hosts` (desktop), `SecureStore`, generación e import/export
+  de clave: todo eso vive en la capa de auth/config, independiente del canal que se abra después.
+- `TerminalConfig` (host/puerto/usuario/clave) se reutiliza; el campo `remoteCommand` pasa a ser el
+  comando de arranque del agente ACP en vez de un shell.
+
+### Qué falta / hay que construir
+
+**1. Canal `exec` real en Android** — hoy `AndroidSshTerminalHost` solo hace
+`allocatePTY`+`startShell` (ver `AndroidSshTerminalHost.kt:78-80`); nunca abre un `exec` sin PTY.
+ACP necesita pipes crudos, sin pty (un pty puede cambiar el buffering/salida del binario ACP,
+que espera stdio plano). Hay que añadir esa capacidad en paralelo a la del shell.
+
+**2. `RawByteChannel` en `commonMain`** — abstracción mínima común a Android (que usa
+`java.io.InputStream`/`OutputStream` crudos) y desktop (que usa `kotlinx.io Source/Sink` vía
+`SshSession.exec()`, ya definido en `SshSession.kt:12` pero sin usar todavía):
+
+```kotlin
+interface RawByteChannel {
+    suspend fun readChunk(buffer: ByteArray): Int  // -1 = EOF, como InputStream.read
+    suspend fun write(bytes: ByteArray)
+    fun close()
+}
+```
+
+**3. `NdjsonFramer` en `commonMain`** (Kotlin puro, sin deps JVM) — bufferiza sobre un
+`RawByteChannel` y expone `Flow<String>` de líneas completas + `writeMessage(json: String)`.
+Testeable en `commonTest` con un `RawByteChannel` fake y reads partidos a mitad de línea (el mismo
+caso límite que ya señalaba el plan original en Fase 2).
+
+**4. Persistencia del proceso remoto — recomendación: NO usar tmux/dtach clásicos.**
+Ambos crean una pty, y una pty puede hacer que `claude-code-acp` cambie de modo de salida
+(muchas CLIs detectan TTY y dejan de emitir NDJSON limpio). Alternativa más segura y que cumple
+igual el requisito de "sobrevive a reconexión":
+
+```bash
+mkfifo /tmp/acp-in /tmp/acp-out /tmp/acp-err
+setsid nohup claude-code-acp <\ /tmp/acp-in >\ /tmp/acp-out 2>\ /tmp/acp-err &
+```
+
+El cliente abre dos canales `exec` (mismo host, misma conexión SSH multiplexada): uno hace
+`cat >> /tmp/acp-in` para escribir, otro `cat /tmp/acp-out` para leer. Si el cliente se desconecta,
+el proceso remoto sigue vivo (desacoplado de la sesión SSH por `setsid`); si el FIFO se llena
+porque nadie está leyendo, el agente simplemente bloquea hasta que alguien reconecte y vuelva a
+leer — no se pierden mensajes, solo se pausan. Si el usuario prefiere tmux por uniformidad con
+`claude-terminal`, es una alternativa válida pero **hay que validar primero** que
+`claude-code-acp` no cambia de comportamiento bajo pty antes de comprometerse a esa vía.
+
+**5. Modelo de dominio ACP** (`commonMain`, `kotlinx.serialization`):
+- Tipos JSON-RPC 2.0 genéricos (`Request`/`Response`/`Notification`), detectando el tipo de mensaje
+  entrante por presencia de `id`/`method` (una notificación no tiene `id`; una respuesta no tiene
+  `method`; un request entrante del agente —p. ej. `session/request_permission`— tiene ambos).
+- `AcpClient`: `initialize()`, `session/new`, `session/prompt`, despacho de `session/update`
+  (stream) y manejo de requests entrantes que exigen respuesta del cliente.
+- ⚠️ El esquema exacto (`SessionUpdate` y sus variantes, forma de `initialize`/capabilities) **no
+  está verificado contra `claude-code-acp` real** — antes de fijar tipos, correr el binario a mano
+  contra el framer de la Fase A y loguear los mensajes crudos, igual que hizo el plan original en
+  su Fase 2 ("enviar `initialize` a mano, loguear la respuesta cruda").
+
+**6. `AcpHost` — nueva interfaz hermana de `TerminalHost`** (no lo reemplaza):
+
+```kotlin
+interface AcpHost {
+    val connection: StateFlow<ConnectionState>   // reutiliza los mismos estados (TOFU, error…)
+    val session: StateFlow<AcpSessionState>      // mensajes, tool calls, plan, permission pendiente
+    fun connect(config: TerminalConfig)
+    fun sendPrompt(text: String)
+    fun respondPermission(requestId: String, outcome: PermissionOutcome)
+    fun disconnect()
+}
+```
+
+`App.kt` necesita un selector de modo (Terminal | Chat) en `ConnectionScreen` que decide qué host
+construir y qué pantalla montar al conectar (`TerminalScreen` vs `ChatScreen` nuevo).
+
+**7. `ChatScreen.kt`** (`commonMain`, v1): burbujas usuario/agente, texto en streaming (append al
+último chunk), tarjetas de tool-call simples (nombre + estado: pendiente/en curso/hecho/error, sin
+diff todavía), input + enviar, modal Allow/Reject/Always-allow para `session/request_permission`.
+Diffs, plan/steps detallado y markdown enriquecido quedan para una fase posterior (Fase E).
+
+### Fases de ejecución
+
+| Fase | Contenido | Depende de decisiones pendientes |
+|------|-----------|-----------------------------------|
+| A | `exec` real en Android + `RawByteChannel` + `NdjsonFramer` (+ tests commonTest) | No — se puede empezar ya |
+| B | Arranque persistente remoto (FIFOs+`setsid`, o tmux/dtach si se valida antes) | No |
+| C | Modelo de dominio ACP (`AcpClient`) contra `claude-code-acp` real | Sí — requiere el binario instalado en el servidor de prueba |
+| D | `AcpHost` + selector de modo + `ChatScreen` v1 | Depende de C |
+| E | Diffs, plan rico, tool-calls expandibles, markdown | Depende de D |
+
+### Riesgos
+
+- Esquema ACP no verificado (ver punto 5) — no comprometerse a tipos de datos hasta correr el
+  binario real.
+- Pty vs pipes en la persistencia (ver punto 4) — validar antes de asumir tmux funciona igual que
+  con una CLI interactiva normal.
+- Duplicación de lógica de conexión/TOFU entre `AndroidSshTerminalHost` (terminal) y el futuro host
+  ACP para Android — evaluar extraer lo común (connect + TOFU + SecureStore) en Fase C/D en vez de
+  copiar la clase.
+- Multiplicidad de agentes ACP a futuro (Gemini CLI, etc.) — capabilities de `initialize` pueden
+  diferir; no asumir todas presentes si algún día se soporta más de uno.
+
+### Siguiente paso concreto
+
+Fase A no depende de nada pendiente — es el punto de partida natural cuando se retome esto.
