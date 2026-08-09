@@ -40,6 +40,11 @@ kotlin {
                 implementation(libs.sshj)
             }
         }
+        named("commonTest") {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
     }
 }
 
