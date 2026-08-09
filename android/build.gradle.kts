@@ -1,5 +1,3 @@
-import java.io.ByteArrayOutputStream
-
 plugins {
     id("com.android.application")
     kotlin("plugin.compose")
@@ -8,12 +6,13 @@ plugins {
 
 /** Nº de commits como versionCode: crece con cada build, sin llevarlo a mano. */
 fun gitCommitCount(): Int {
-    val out = ByteArrayOutputStream()
-    exec {
-        commandLine("git", "rev-list", "--count", "HEAD")
-        standardOutput = out
-    }
-    return out.toString().trim().toIntOrNull() ?: 1
+    val process = ProcessBuilder("git", "rev-list", "--count", "HEAD")
+        .directory(rootDir)
+        .redirectErrorStream(true)
+        .start()
+    val output = process.inputStream.bufferedReader().readText().trim()
+    process.waitFor()
+    return output.toIntOrNull() ?: 1
 }
 
 android {
