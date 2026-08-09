@@ -5,7 +5,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -35,3 +35,14 @@ jobs:
           name: acp-ssh-kmp-debug-apk
           path: android/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Publish latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest debug build
+          body: "Automated debug APK from ${{ github.sha }}"
+          prerelease: true
+          files: android/build/outputs/apk/debug/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
