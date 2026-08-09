@@ -205,23 +205,34 @@ private fun buildRow(cells: List<Cell>): AnnotatedString {
 }
 
 private fun styleToSpan(s: com.nxssie.acpssh.terminal.CellStyle): SpanStyle {
-    val fgRef = if (s.reverse) s.bg else s.fg
-    val bgRef = if (s.reverse) s.fg else s.bg
-    val fg = colorOf(fgRef, s.bold)
+    // Resolver fg/bg a colores concretos ANTES de aplicar reverse-video: así
+    // "default" se resuelve distinto según el rol (texto claro vs fondo oscuro)
+    // y el swap de reverse intercambia colores ya resueltos, no referencias.
+    val resolvedFg = colorOf(s.fg, s.bold, isForeground = true)
+    val resolvedBg = colorOf(s.bg, bold = false, isForeground = false)
+    val fg = if (s.reverse) resolvedBg else resolvedFg
+    val bg = if (s.reverse) resolvedFg else resolvedBg
     return SpanStyle(
         color = if (s.faint) fg.copy(alpha = 0.6f) else fg,
-        background = colorOf(bgRef, bold = false),
+        background = bg,
         fontWeight = if (s.bold) FontWeight.Bold else FontWeight.Normal,
         fontStyle = if (s.italic) FontStyle.Italic else FontStyle.Normal,
         textDecoration = if (s.underline) TextDecoration.Underline else null,
     )
 }
 
-private fun colorOf(ref: ColorRef, bold: Boolean): Color = when (ref) {
-    ColorRef.Default -> if (bold) Color(0xFFE0E0E0.toInt()) else Color(0xFFD0D0D0.toInt())
+/** Fondo por defecto del terminal: debe coincidir con el `background()` de [TerminalScreen]. */
+private val DefaultTerminalBg = Color(0xFF101010.toInt())
+
+private fun colorOf(ref: ColorRef, bold: Boolean, isForeground: Boolean): Color = when (ref) {
+    ColorRef.Default -> when {
+        !isForeground -> DefaultTerminalBg
+        bold -> Color(0xFFE0E0E0.toInt())
+        else -> Color(0xFFD0D0D0.toInt())
+    }
     is ColorRef.Palette -> {
         var index = ref.index
-        if (bold && index in 0..7) index += 8 // negrita = versión brillante
+        if (bold && isForeground && index in 0..7) index += 8 // negrita = versión brillante
         Color(0xFF000000.toInt() or TerminalColors.rgbFor(index))
     }
     is ColorRef.Rgb -> Color(0xFF000000.toInt() or ref.value)
