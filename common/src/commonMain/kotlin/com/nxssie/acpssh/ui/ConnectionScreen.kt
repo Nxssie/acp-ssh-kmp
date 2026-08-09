@@ -8,15 +8,18 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -24,6 +27,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nxssie.acpssh.crypto.generateEd25519SshKey
 import com.nxssie.acpssh.session.TerminalConfig
 
 @Composable
@@ -39,6 +43,7 @@ fun ConnectionScreen(
     var command by rememberSaveable {
         mutableStateOf(initial?.remoteCommand ?: "tmux new -As claude-terminal")
     }
+    var generatedPublicKey by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier
@@ -84,6 +89,29 @@ fun ConnectionScreen(
                 .fillMaxWidth()
                 .heightIn(min = 160.dp),
         )
+        OutlinedButton(
+            onClick = {
+                val generated = generateEd25519SshKey(comment = "acp-ssh-kmp")
+                pem = generated.privateKeyPem
+                generatedPublicKey = generated.publicKeyLine
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Generar nueva clave Ed25519")
+        }
+        if (generatedPublicKey != null) {
+            Text(
+                "Añade esta clave pública al servidor (~/.ssh/authorized_keys):",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            SelectionContainer {
+                Text(
+                    generatedPublicKey!!,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                )
+            }
+        }
         OutlinedTextField(
             value = command,
             onValueChange = { command = it },

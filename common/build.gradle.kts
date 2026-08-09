@@ -35,9 +35,15 @@ kotlin {
                 implementation(libs.kotlinx.io.core)
             }
         }
+        named("androidMain") {
+            dependencies {
+                implementation(libs.bouncycastle.bcprov)
+            }
+        }
         named("desktopMain") {
             dependencies {
                 implementation(libs.sshj)
+                implementation(libs.bouncycastle.bcprov)
             }
         }
         named("commonTest") {
