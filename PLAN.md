@@ -322,3 +322,33 @@ Diffs, plan/steps detallado y markdown enriquecido quedan para una fase posterio
 ### Siguiente paso concreto
 
 Fase A no depende de nada pendiente — es el punto de partida natural cuando se retome esto.
+
+## Fase A — Transporte NDJSON: COMPLETADA (2026-08-09)
+
+**Contenido:** canal `exec` sin PTY + framing NDJSON, común a Android y desktop. Sin tocar UI,
+selector de modo, `AcpHost` ni tipos ACP (Fases B–E siguen bloqueadas por el binario real).
+
+- `commonMain` `acp/RawByteChannel.kt`: interfaz de bytes bidireccional (`readChunk` con -1=EOF,
+  `write`, `flush`), pura common sin kotlinx.io ni `expect/actual`.
+- `commonMain` `acp/NdjsonFramer.kt`: `lines(): Flow<String>` bufferizando hasta `\n`, buffer
+  con crecimiento por duplicación (sin tamaño máximo de línea), decode UTF-8 solo en límites de
+  línea (un char partido entre reads queda íntegro), `\r\n` normalizado, línea parcial emitida en
+  EOF; `writeLine()` escribe línea+`\n` y hace flush.
+- `commonTest` `acp/NdjsonFramerTest.kt`: 12 tests con `FakeRawChannel` (chunks partidos, bytes de
+  a uno, nueva línea a mitad de chunk, línea de 300KB, `\r\n`, UTF-8 entre reads, EOF sin datos,
+  writes). Vía `:common:desktopTest`.
+- `desktopMain` `acp/RawByteChannels.kt`: `ExecChannel.asRawByteChannel()` — bridge del `exec`
+  kotlinx.io existente (`SshSession.exec()`, sin tocar plomería SSH). Drena `stderr` en una
+  coroutine aparte (`SupervisorJob` cancelado en `close()`) para no bloquear el canal si el
+  remoto escribe ahí.
+- `:android` `acp/SshjExecRawChannel.kt`: `exec` sin PTY sobre los streams crudos de SSHJ
+  (`Session.Command` + `Dispatchers.IO`), los pipes planos que espera ACP. Mismo drenado de
+  `stderr` en background que el bridge desktop.
+- `AndroidSshTerminalHost.openExec(command)`: expone el canal sobre el cliente ya autenticado
+  (stopgap: hoy requiere `connect()` de shell; Fase D refactorizará a un host exec-only); cierra
+  la sesión si `exec()` falla.
+
+**Verificación:** compilado + tests corriendo fuera de gradle (sandbox sin JDK/SDK): Kotlin 2.4.10,
+coroutines 1.11.0, kotlinx-io 0.9.1, sshj 0.40.0 — 12/12 tests OK; el adaptador Android y el
+bridge desktop compilan contra las mismas versiones. Falta correr `:common:desktopTest` +
+`:android:assembleDebug` en la máquina con SDK (ver Fase A del plan de ejecución).
