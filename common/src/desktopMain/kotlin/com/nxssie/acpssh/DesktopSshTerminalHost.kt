@@ -24,6 +24,10 @@ import java.io.File
  */
 class DesktopSshTerminalHost : TerminalHost {
 
+    init {
+        com.nxssie.acpssh.crypto.ensureBouncyCastleProvider()
+    }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val _connection = MutableStateFlow(ConnectionState(ConnectStatus.DISCONNECTED))
     override val connection: StateFlow<ConnectionState> = _connection

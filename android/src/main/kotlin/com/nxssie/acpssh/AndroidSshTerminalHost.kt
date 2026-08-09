@@ -32,6 +32,10 @@ import java.io.InputStream
  */
 class AndroidSshTerminalHost(context: Context) : TerminalHost {
 
+    init {
+        com.nxssie.acpssh.crypto.ensureBouncyCastleProvider()
+    }
+
     private val store = SecureStore(context)
     private val verifier = TofuHostKeyVerifier(store) { pending ->
         _connection.value = ConnectionState(ConnectStatus.AWAITING_HOST_KEY, pendingHostKey = pending)
