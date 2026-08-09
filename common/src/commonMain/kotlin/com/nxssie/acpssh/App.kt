@@ -13,6 +13,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -27,7 +29,8 @@ import com.nxssie.acpssh.ui.TerminalScreen
 
 @Composable
 fun App(host: TerminalHost) {
-    MaterialTheme(colorScheme = darkColorScheme()) {
+    val colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
+    MaterialTheme(colorScheme = colorScheme) {
         Surface(
             modifier = Modifier
                 .fillMaxSize()
