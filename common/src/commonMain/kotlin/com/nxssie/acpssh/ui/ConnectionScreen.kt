@@ -19,7 +19,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -43,7 +42,7 @@ fun ConnectionScreen(
     var command by rememberSaveable {
         mutableStateOf(initial?.remoteCommand ?: "tmux new -As claude-terminal")
     }
-    var generatedPublicKey by remember { mutableStateOf<String?>(null) }
+    var generatedPublicKey by rememberSaveable { mutableStateOf(initial?.publicKeyLine) }
 
     Column(
         modifier = Modifier
@@ -78,7 +77,12 @@ fun ConnectionScreen(
         )
         OutlinedTextField(
             value = pem,
-            onValueChange = { pem = it },
+            onValueChange = {
+                // Si el usuario pega/edita otra clave a mano, la pública mostrada
+                // (de la última generada) ya no corresponde: se oculta.
+                if (it != pem) generatedPublicKey = null
+                pem = it
+            },
             label = { Text("Clave privada (PEM)") },
             placeholder = { Text("-----BEGIN OPENSSH PRIVATE KEY----- …") },
             textStyle = LocalTextStyle.current.copy(
@@ -99,14 +103,15 @@ fun ConnectionScreen(
         ) {
             Text("Generar nueva clave Ed25519")
         }
-        if (generatedPublicKey != null) {
+        val publicKey = generatedPublicKey
+        if (publicKey != null) {
             Text(
-                "Añade esta clave pública al servidor (~/.ssh/authorized_keys):",
+                "Clave pública (añádela a ~/.ssh/authorized_keys en el servidor):",
                 style = MaterialTheme.typography.bodySmall,
             )
             SelectionContainer {
                 Text(
-                    generatedPublicKey!!,
+                    publicKey,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 11.sp,
                 )
@@ -133,6 +138,7 @@ fun ConnectionScreen(
                         username = username.trim(),
                         privateKeyPem = pem.trim(),
                         remoteCommand = command.trim().ifEmpty { null },
+                        publicKeyLine = generatedPublicKey,
                     )
                 )
             },

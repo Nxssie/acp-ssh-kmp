@@ -20,6 +20,8 @@ data class TerminalConfig(
     val username: String,
     val privateKeyPem: String,
     val remoteCommand: String? = null,
+    /** Línea `ssh-ed25519 <b64> <comment>` de la pública, si la privada se generó en la app. */
+    val publicKeyLine: String? = null,
 )
 
 /**

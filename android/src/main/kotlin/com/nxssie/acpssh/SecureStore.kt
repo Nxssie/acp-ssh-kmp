@@ -33,6 +33,7 @@ class SecureStore(context: Context) {
             .putString(KEY_USER, config.username)
             .putString(KEY_PEM, config.privateKeyPem)
             .putString(KEY_COMMAND, config.remoteCommand.orEmpty())
+            .putString(KEY_PUBLIC, config.publicKeyLine.orEmpty())
             .apply()
     }
 
@@ -46,6 +47,7 @@ class SecureStore(context: Context) {
             username = user,
             privateKeyPem = pem,
             remoteCommand = prefs.getString(KEY_COMMAND, null)?.takeIf { it.isNotBlank() },
+            publicKeyLine = prefs.getString(KEY_PUBLIC, null)?.takeIf { it.isNotBlank() },
         )
     }
 
@@ -64,6 +66,7 @@ class SecureStore(context: Context) {
         const val KEY_USER = "user"
         const val KEY_PEM = "pem"
         const val KEY_COMMAND = "command"
+        const val KEY_PUBLIC = "public_key"
         const val HOST_KEY_PREFIX = "hostkey:"
     }
 }
