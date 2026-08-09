@@ -20,40 +20,46 @@ class TofuHostKeyVerifier(
     private val onPending: (PendingHostKey) -> Unit,
 ) : HostKeyVerifier {
 
-    @Volatile private var decision: CountDownLatch? = null
-    @Volatile private var accepted: AtomicBoolean? = null
-    @Volatile private var pendingHost: String = ""
-    @Volatile private var pendingFingerprint: String = ""
+    /** Estado inmutable de una verificación en curso: evita que una decisión
+     *  tardía (reconexión, segunda clave del mismo host) acepte la huella
+     *  equivocada. */
+    private class Pending(val host: String, val fingerprint: String) {
+        val latch = CountDownLatch(1)
+        val accepted = AtomicBoolean(false)
+    }
+
+    @Volatile private var pending: Pending? = null
 
     override fun verify(hostname: String, port: Int, key: PublicKey): Boolean {
         val fp = fingerprint(key)
         if (fp in store.acceptedKeys(hostname)) return true
 
-        pendingHost = hostname
-        pendingFingerprint = fp
-        val latch = CountDownLatch(1)
-        val result = AtomicBoolean(false)
-        decision = latch
-        accepted = result
+        val p = Pending(hostname, fp)
+        pending = p
         onPending(PendingHostKey(key.algorithm, fp))
         return try {
-            latch.await(DECISION_TIMEOUT_SECONDS, TimeUnit.SECONDS) && result.get()
+            p.latch.await(DECISION_TIMEOUT_SECONDS, TimeUnit.SECONDS) && p.accepted.get()
         } catch (e: InterruptedException) {
             false
+        } finally {
+            // Solo limpia si nadie inició otra verificación mientras tanto.
+            if (pending === p) pending = null
         }
     }
 
     override fun findExistingAlgorithms(hostname: String, port: Int): List<String> = emptyList()
 
     fun acceptHostKey() {
-        store.acceptKey(pendingHost, pendingFingerprint)
-        accepted?.set(true)
-        decision?.countDown()
+        val p = pending ?: return
+        store.acceptKey(p.host, p.fingerprint)
+        p.accepted.set(true)
+        p.latch.countDown()
     }
 
     fun rejectHostKey() {
-        accepted?.set(false)
-        decision?.countDown()
+        val p = pending ?: return
+        p.accepted.set(false)
+        p.latch.countDown()
     }
 
     /**
