@@ -2,10 +2,14 @@ package com.nxssie.acpssh
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -24,16 +28,23 @@ import com.nxssie.acpssh.ui.TerminalScreen
 @Composable
 fun App(host: TerminalHost) {
     MaterialTheme(colorScheme = darkColorScheme()) {
-        val connection by host.connection.collectAsState()
-        when (connection.status) {
-            ConnectStatus.CONNECTED -> TerminalScreen(host)
-            ConnectStatus.CONNECTING -> LoadingScreen()
-            ConnectStatus.AWAITING_HOST_KEY -> HostKeyDialog(host, connection.pendingHostKey)
-            ConnectStatus.DISCONNECTED, ConnectStatus.FAILED -> ConnectionScreen(
-                initial = host.loadLastConfig(),
-                error = connection.error,
-                onConnect = host::connect,
-            )
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing),
+            color = MaterialTheme.colorScheme.background,
+        ) {
+            val connection by host.connection.collectAsState()
+            when (connection.status) {
+                ConnectStatus.CONNECTED -> TerminalScreen(host)
+                ConnectStatus.CONNECTING -> LoadingScreen()
+                ConnectStatus.AWAITING_HOST_KEY -> HostKeyDialog(host, connection.pendingHostKey)
+                ConnectStatus.DISCONNECTED, ConnectStatus.FAILED -> ConnectionScreen(
+                    initial = host.loadLastConfig(),
+                    error = connection.error,
+                    onConnect = host::connect,
+                )
+            }
         }
     }
 }
