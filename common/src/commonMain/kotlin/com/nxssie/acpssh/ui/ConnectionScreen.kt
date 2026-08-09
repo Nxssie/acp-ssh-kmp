@@ -2,6 +2,7 @@ package com.nxssie.acpssh.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -27,6 +28,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nxssie.acpssh.crypto.generateEd25519SshKey
+import com.nxssie.acpssh.io.rememberPemExporter
+import com.nxssie.acpssh.io.rememberPemImporter
 import com.nxssie.acpssh.session.TerminalConfig
 
 @Composable
@@ -43,6 +46,12 @@ fun ConnectionScreen(
         mutableStateOf(initial?.remoteCommand ?: "tmux new -As claude-terminal")
     }
     var generatedPublicKey by rememberSaveable { mutableStateOf(initial?.publicKeyLine) }
+
+    val exportPem = rememberPemExporter()
+    val importPem = rememberPemImporter { imported ->
+        if (imported != pem) generatedPublicKey = null
+        pem = imported
+    }
 
     Column(
         modifier = Modifier
@@ -102,6 +111,24 @@ fun ConnectionScreen(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("Generar nueva clave Ed25519")
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = importPem,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Importar .pem")
+            }
+            OutlinedButton(
+                onClick = { exportPem("acp-ssh-kmp.pem", pem) },
+                enabled = pem.isNotBlank(),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Exportar .pem")
+            }
         }
         val publicKey = generatedPublicKey
         if (publicKey != null) {

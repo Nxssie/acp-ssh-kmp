@@ -38,6 +38,7 @@ kotlin {
         named("androidMain") {
             dependencies {
                 implementation(libs.bouncycastle.bcprov)
+                implementation(libs.androidx.activity.compose)
             }
         }
         named("desktopMain") {
