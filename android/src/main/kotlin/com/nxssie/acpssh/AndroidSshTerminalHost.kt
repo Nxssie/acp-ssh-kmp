@@ -25,7 +25,6 @@ import net.schmizz.sshj.userauth.keyprovider.KeyProvider
 import net.schmizz.sshj.userauth.keyprovider.OpenSSHKeyFile
 import java.io.IOException
 import java.io.InputStream
-import java.io.OutputStream
 
 /**
  * Implementación de [TerminalHost] para Android con SSHJ:
@@ -34,7 +33,6 @@ import java.io.OutputStream
 class AndroidSshTerminalHost(context: Context) : TerminalHost {
 
     private val store = SecureStore(context)
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val verifier = TofuHostKeyVerifier(store) { pending ->
         _connection.value = ConnectionState(ConnectStatus.AWAITING_HOST_KEY, pendingHostKey = pending)
     }
@@ -46,10 +44,16 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
     override val screen: StateFlow<TerminalState> get() = emulator.state
     override val terminal: TerminalEmulator get() = emulator
 
+    /** Comandos hacia el remoto, serializados por un único consumidor. */
+    private sealed interface Command {
+        class Data(val bytes: ByteArray) : Command
+        class Resize(val cols: Int, val rows: Int) : Command
+    }
+
     private var sessionScope: CoroutineScope? = null
     private var client: SSHClient? = null
     private var shell: Session.Shell? = null
-    @Volatile private var writeChannel: Channel<ByteArray>? = null
+    @Volatile private var writeChannel: Channel<Command>? = null
 
     override fun connect(config: TerminalConfig) {
         disconnect()
@@ -76,14 +80,14 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
                 val sh = session.startShell()
                 client = ssh
                 shell = sh
-                val channel = Channel<ByteArray>(Channel.UNLIMITED)
+                val channel = Channel<Command>(Channel.UNLIMITED)
                 writeChannel = channel
-                launch(Dispatchers.IO) { writeLoop(channel, sh.outputStream) }
-                emulator.onResponse = { out -> channel.trySend(out) }
+                launch(Dispatchers.IO) { writeLoop(channel, sh) }
+                emulator.onResponse = { out -> channel.trySend(Command.Data(out)) }
                 _connection.value = ConnectionState(ConnectStatus.CONNECTED)
 
                 config.remoteCommand?.takeIf { it.isNotBlank() }?.let { cmd ->
-                    channel.trySend((cmd + "\r").encodeToByteArray())
+                    channel.trySend(Command.Data((cmd + "\r").encodeToByteArray()))
                 }
 
                 launch { readLoop(sh.inputStream) }
@@ -99,13 +103,18 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
         }
     }
 
-    /** Único consumidor del canal de escritura: serializa todos los writes al stdin remoto. */
-    private suspend fun writeLoop(channel: Channel<ByteArray>, out: OutputStream) {
-        for (bytes in channel) {
+    /** Único consumidor del canal: serializa writes y window-changes al remoto. */
+    private suspend fun writeLoop(channel: Channel<Command>, sh: Session.Shell) {
+        for (cmd in channel) {
             try {
-                out.write(bytes)
-                out.flush()
-            } catch (e: IOException) {
+                when (cmd) {
+                    is Command.Data -> {
+                        sh.outputStream.write(cmd.bytes)
+                        sh.outputStream.flush()
+                    }
+                    is Command.Resize -> sh.changeWindowDimensions(cmd.cols, cmd.rows, 0, 0)
+                }
+            } catch (e: Exception) {
                 break
             }
         }
@@ -121,7 +130,13 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
                     break
                 }
                 if (n <= 0) break
-                emulator.feed(buffer, n)
+                try {
+                    emulator.feed(buffer, n)
+                } catch (e: Exception) {
+                    // Bug del emulador o secuencia inesperada: desconectar limpio
+                    // en vez de tumbar la coroutine (y la app) sin handler.
+                    break
+                }
             }
         }
         disconnectInternal()
@@ -147,6 +162,7 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
         }
         sessionScope?.cancel()
         sessionScope = null
+        emulator.onResponse = null
         writeChannel?.close()
         writeChannel = null
         runCatching { shell?.close() }
@@ -160,22 +176,20 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
     override fun rejectHostKey() = verifier.rejectHostKey()
 
     override fun send(bytes: ByteArray) {
-        writeChannel?.trySend(bytes)
+        writeChannel?.trySend(Command.Data(bytes))
     }
 
     override fun send(text: String) = send(text.encodeToByteArray())
 
     override fun resize(cols: Int, rows: Int) {
         emulator.resize(cols, rows)
-        val sh = shell ?: return
-        scope.launch(Dispatchers.IO) {
-            runCatching { sh.changeWindowDimensions(cols, rows, 0, 0) }
-        }
+        writeChannel?.trySend(Command.Resize(cols, rows))
     }
 
     override fun disconnect() {
         sessionScope?.cancel()
         sessionScope = null
+        emulator.onResponse = null
         writeChannel?.close()
         writeChannel = null
         runCatching { shell?.close() }

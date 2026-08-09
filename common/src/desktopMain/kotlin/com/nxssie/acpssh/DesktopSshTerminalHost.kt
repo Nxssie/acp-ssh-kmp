@@ -32,11 +32,17 @@ class DesktopSshTerminalHost : TerminalHost {
     override val screen: StateFlow<TerminalState> get() = emulator.state
     override val terminal: TerminalEmulator get() = emulator
 
+    /** Comandos hacia el remoto, serializados por un único consumidor. */
+    private sealed interface Command {
+        class Data(val bytes: ByteArray) : Command
+        class Resize(val cols: Int, val rows: Int) : Command
+    }
+
     private var job: Job? = null
     private var session: SshSession? = null
     private var shell: PtyShell? = null
     private var lastConfig: TerminalConfig? = null
-    private var writeChannel: Channel<ByteArray>? = null
+    private var writeChannel: Channel<Command>? = null
 
     override fun connect(config: TerminalConfig) {
         disconnect()
@@ -49,14 +55,14 @@ class DesktopSshTerminalHost : TerminalHost {
                 val sh = ssh.openShell()
                 session = ssh
                 shell = sh
-                val channel = Channel<ByteArray>(Channel.UNLIMITED)
+                val channel = Channel<Command>(Channel.UNLIMITED)
                 writeChannel = channel
                 launch { writeLoop(channel, sh) }
-                emulator.onResponse = { out -> channel.trySend(out) }
+                emulator.onResponse = { out -> channel.trySend(Command.Data(out)) }
                 _connection.value = ConnectionState(ConnectStatus.CONNECTED)
 
                 config.remoteCommand?.takeIf { it.isNotBlank() }?.let { cmd ->
-                    channel.trySend((cmd + "\r").encodeToByteArray())
+                    channel.trySend(Command.Data((cmd + "\r").encodeToByteArray()))
                 }
 
                 launch { readLoop(sh) }
@@ -72,12 +78,17 @@ class DesktopSshTerminalHost : TerminalHost {
         }
     }
 
-    /** Único consumidor del canal de escritura: serializa todos los writes al stdin remoto. */
-    private suspend fun writeLoop(channel: Channel<ByteArray>, sh: PtyShell) {
-        for (bytes in channel) {
+    /** Único consumidor del canal: serializa writes y window-changes al remoto. */
+    private suspend fun writeLoop(channel: Channel<Command>, sh: PtyShell) {
+        for (cmd in channel) {
             try {
-                sh.stdin.write(bytes)
-                sh.stdin.flush()
+                when (cmd) {
+                    is Command.Data -> {
+                        sh.stdin.write(cmd.bytes)
+                        sh.stdin.flush()
+                    }
+                    is Command.Resize -> sh.resize(cmd.cols, cmd.rows)
+                }
             } catch (e: Exception) {
                 break
             }
@@ -93,7 +104,13 @@ class DesktopSshTerminalHost : TerminalHost {
                 break
             }
             if (n <= 0) break
-            emulator.feed(buffer, n)
+            try {
+                emulator.feed(buffer, n)
+            } catch (e: Exception) {
+                // Bug del emulador o secuencia inesperada: desconectar limpio
+                // en vez de tumbar la coroutine sin handler.
+                break
+            }
         }
         disconnectInternal()
     }
@@ -116,6 +133,7 @@ class DesktopSshTerminalHost : TerminalHost {
         }
         job?.cancel()
         job = null
+        emulator.onResponse = null
         writeChannel?.close()
         writeChannel = null
         runCatching { shell?.close() }
@@ -129,22 +147,20 @@ class DesktopSshTerminalHost : TerminalHost {
     override fun rejectHostKey() = Unit
 
     override fun send(bytes: ByteArray) {
-        writeChannel?.trySend(bytes)
+        writeChannel?.trySend(Command.Data(bytes))
     }
 
     override fun send(text: String) = send(text.encodeToByteArray())
 
     override fun resize(cols: Int, rows: Int) {
         emulator.resize(cols, rows)
-        val sh = shell ?: return
-        scope.launch {
-            runCatching { sh.resize(cols, rows) }
-        }
+        writeChannel?.trySend(Command.Resize(cols, rows))
     }
 
     override fun disconnect() {
         job?.cancel()
         job = null
+        emulator.onResponse = null
         writeChannel?.close()
         writeChannel = null
         runCatching { shell?.close() }
