@@ -576,3 +576,210 @@ diff + plan, `request_permission` con 2 opciones, `stopReason=end_turn`).
 2. Contra el agente real: instalar `claude-code-acp` en el servidor y apuntar el
    `remoteCommand` del modo chat a su ruta; verificar streaming, tool calls, diffs,
    `request_permission` con claude en modo manual.
+
+## Retomar ACP — perfiles guardados, claves gestionadas y tabs paralelos (2026-08-10, borrador)
+
+> Estado: planificado, sin código. Pedido del usuario: no fijar un comando por
+> defecto y permitir varios comandos guardados; la clave privada no debe mostrarse
+> siempre en pantalla (select en vez de textarea permanente); varias configuraciones
+> de conexión guardadas; varios tabs de chat en paralelo, lo que implica que el host
+> soporte más de una conexión/sesión ACP a la vez. DeepSeek ejecuta esto después.
+
+### Por qué no es un cambio de UI aislado
+
+Hoy `SecureStore` (`android/.../SecureStore.kt:29-52`) guarda **una sola**
+configuración con claves fijas (`host`, `port`, `user`, `pem`, `command`,
+`public_key`) — cada `saveConfig()` pisa la anterior, no hay lista. Desktop ni
+siquiera tiene esto: `DesktopAcpHost`/`DesktopSshTerminalHost` guardan `lastConfig`
+en una variable en memoria, se pierde al cerrar la app. `ConnectionScreen.kt:48,109-126`
+pinta la clave PEM en un `OutlinedTextField` multilinea siempre visible, precargado
+con el secreto en claro cada vez que se abre la pantalla; `command` (`ConnectionScreen.kt:49-51`)
+es un único campo de texto libre con un default hardcodeado por modo
+(`"tmux new -As claude-terminal"` / `"claude-code-acp"`). Y tanto `AcpHost` como
+`TerminalHost` son **de una sola sesión**: `AndroidAcpHost`/`DesktopAcpHost` tienen
+variables singulares (`transport`, `acpSession`, `acpClient`, `sessionStore`) y
+`connect()` llama a `disconnect()` primero — conectar de nuevo mata la sesión
+anterior. `App.kt:52-53` tiene un único `mode` y un único `active: HasConnection`,
+sin concepto de "varias sesiones vivas" en absoluto. Cuatro pedidos → cuatro capas
+distintas a tocar (storage, UI de conexión, capa de host/sesión, UI de chat).
+
+### Qué se reutiliza tal cual
+
+- `PemFileIo.kt` (`rememberPemExporter`/`rememberPemImporter`, SAF en Android /
+  `JFileChooser` en desktop): la mecánica de importar/exportar `.pem` ya existe,
+  solo hay que conectarla a una lista de claves guardadas en vez de a un único
+  campo de texto.
+- TOFU (`TofuHostKeyVerifier`), generación Ed25519 (`generateEd25519SshKey`),
+  `AcpSession`/`AcpClient`/`RemoteAcpProcess`: nada de esto cambia — el fix de
+  Fase B/D de evitar el lector huérfano por PID (`RemoteAcpProcess.kt`) es
+  precisamente lo que hace seguro tener varios `runDir` concurrentes (ver Fase H).
+
+### Fase F — Almacenamiento multi-perfil (storage puro, sin UI)
+
+**1. Modelo de datos nuevo** (`commonMain`, `kotlinx.serialization`):
+
+```kotlin
+data class SavedKey(val id: String, val label: String, val privateKeyPem: String, val publicKeyLine: String? = null)
+data class SavedCommand(val id: String, val label: String, val command: String, val mode: AcpMode? = null)
+data class ConnectionProfile(
+    val id: String,
+    val label: String,
+    val host: String,
+    val port: Int = 22,
+    val username: String,
+    val keyId: String,        // referencia a SavedKey.id
+    val commandId: String?,   // referencia a SavedCommand.id; null = comando vacío (shell por defecto en modo Terminal)
+    val acpRunDir: String? = null,
+    val acpCwd: String? = null,
+)
+```
+
+`mode: AcpMode? = null` en `SavedCommand` permite comandos reutilizables entre
+Terminal y Chat (p. ej. nada impide guardar `tmux new -As claude-terminal` y
+`claude-code-acp` en la misma lista) o marcados para un modo si el usuario quiere
+separarlos; el selector de comandos (Fase G) filtra por modo pero muestra "ver
+todos" para reutilizar uno de otro modo.
+
+**2. `ProfileStore` — interfaz común** (`commonMain`, sin dependencias de
+plataforma): `listProfiles()/saveProfile()/deleteProfile()`,
+`listKeys()/saveKey()/deleteKey()`, `listCommands()/saveCommand()/deleteCommand()`,
+`loadLastProfileId()/setLastProfileId()` (qué perfil abrir por defecto al entrar).
+Todo por `Flow`/`StateFlow` si la UI necesita reactividad, o simples funciones si
+la UI relee al entrar a la pantalla (más simple, evaluar en Fase G).
+
+**3. Implementación Android** (`android/.../SecureStoreProfileStore.kt`, reemplaza
+gradualmente a `SecureStore`): mismo `EncryptedSharedPreferences`, pero las listas
+se serializan como JSON (`Json.encodeToString(List<ConnectionProfile>)`) bajo una
+sola key por tipo (`profiles`, `keys`, `commands`) en vez de campos sueltos —
+evita migrar el schema de prefs cada vez que se añade un campo. **Migración**:
+al primer arranque tras esta versión, si existen las keys viejas de `SecureStore`
+(`host`/`user`/`pem`/`command`) y no existe ya ningún perfil, crear un
+`ConnectionProfile`+`SavedKey`+`SavedCommand` a partir de ellas (así nadie pierde
+su conexión guardada al actualizar) y borrar las keys viejas.
+
+**4. Implementación desktop** (`common/src/desktopMain/.../DesktopProfileStore.kt`):
+hoy no hay ninguna persistencor — usar un archivo JSON en
+`~/.config/acp-ssh-kmp/profiles.json` (permisos `600`, plano: desktop no tiene
+AndroidX Security ni es el target con amenaza de "otra app en el mismo dispositivo
+lee tus prefs" que sí aplica en Android). Documentar la asimetría de seguridad
+Android (cifrado) vs desktop (archivo plano con permisos de usuario) igual que ya
+se documenta la asimetría TOFU vs `known_hosts`.
+
+**5. Tests** (`commonTest` para el modelo de datos + reglas de referencia
+`keyId`/`commandId` inválidos; tests de la implementación Android/desktop quedan
+fuera de `commonTest` igual que hoy `SecureStore` no tiene test — evaluar si vale
+un test JVM para `DesktopProfileStore` dado que sí es código nuevo en desktopMain).
+
+### Fase G — UI: perfiles, claves y comandos gestionados (reemplaza `ConnectionScreen`)
+
+**Pantalla de perfiles** (nueva, antes de lo que hoy es `ConnectionScreen`): lista
+de `ConnectionProfile` guardados (label + host) con "Conectar" / "Editar" / "Duplicar"
+/ "Borrar", botón "Nueva conexión". Si no hay perfiles, ir directo al formulario
+(no forzar una pantalla vacía intermedia).
+
+**Formulario de conexión** (`ConnectionScreen` reescrita): host/puerto/usuario en
+texto libre como hoy; **clave**: `ExposedDropdownMenuBox` (Material3) con las
+`SavedKey` guardadas por label — la clave NUNCA se pinta en pantalla al elegirla
+del select, solo su label; opción "Gestionar claves" abre un diálogo con
+generar/importar/exportar/renombrar/borrar sobre la lista (reutiliza
+`rememberPemExporter`/`rememberPemImporter` de Fase F); un botón explícito
+"Mostrar clave" (no automático) permite ver el PEM en claro de la clave
+seleccionada, para el caso de que el usuario necesite copiarla — fricción
+deliberada, no lo oculta del todo. **Comando**: mismo patrón de dropdown sobre
+`SavedCommand` (filtrado por `mode` actual, con opción "ver todos"), opción
+"Nuevo comando" que abre un campo de texto + label para guardarlo, y opción
+"Sin comando guardado (usar shell / claude-code-acp por defecto)" en vez de un
+default siempre precargado — cubre el pedido de "que la app pueda no incluir
+comando por defecto".
+
+**`TerminalConfig`** pierde su rol de "única fuente de verdad guardada": pasa a
+construirse en el momento de conectar a partir de `ConnectionProfile` +
+`SavedKey` + `SavedCommand` resueltos (`profile.toTerminalConfig(key, command)`),
+en vez de ser lo que persiste `SecureStore` directamente.
+
+### Fase H — Multi-sesión ACP: una conexión SSH, varios agentes remotos
+
+**Decisión de diseño — un proceso de agente por tab, no multiplexado por
+`sessionId` sobre un único agente.** El protocolo ya viaja con `sessionId` en cada
+`session/update` (`AcpClient.kt:171` lee `message.params` pero `route()` solo
+pasa `update`, sin `sessionId`, al `Channel<SessionUpdate>` único — así que hoy
+NO hay demux) y en teoría un solo `claude-code-acp` podría atender varias
+`session/new` a la vez. Pero eso exige (a) verificar que el agente real soporta
+bien sesiones concurrentes — sin binario real a mano no se puede confirmar, ver
+la brecha ya documentada en "Verificación aún pendiente"/punto 2 — y (b) reescribir
+`AcpClient`/`AcpSessionStore` para rutear por `sessionId`. La alternativa —
+**un `AcpSession` (con su propio `runDir`, ergo sus propios FIFOs/proceso remoto)
+por tab, todos sobre la misma conexión SSH ya autenticada** — no depende de esa
+suposición no verificada, aísla fallos (un agente que crashea no afecta a los
+demás tabs) y reutiliza sin cambios el fix de Fase B/D del lector huérfano por
+PID (cada `runDir` es independiente, no hay colisión de FIFOs). Costo: un proceso
+`claude-code-acp` por tab en el servidor en vez de uno compartido — aceptable
+salvo que el usuario abra decenas de tabs a la vez.
+
+**`AcpSessionManager`** (`commonMain`, nueva clase — hoy esta responsabilidad vive
+mezclada dentro de `AndroidAcpHost`/`DesktopAcpHost`): mantiene la conexión SSH
+(un `AcpExecTransport`/cliente compartido) y un mapa `tabId -> AcpSessionEntry`
+donde cada entrada tiene su propio `AcpSession`, `AcpClient`, `AcpSessionStore`
+(cada `runDir` se autogenera como `${config.acpRunDir}/tab-<uuid>` si no se fija
+uno explícito, para que dos tabs del mismo perfil no compartan FIFOs por accidente).
+Expone `StateFlow<Map<String, AcpSessionState>>` o una lista de
+`StateFlow<AcpSessionState>` por tab, `openTab(profile)`, `closeTab(tabId)`
+(cierra ese `AcpSession` sin tocar la conexión SSH ni los demás tabs — el
+agente remoto de ESE tab sigue vivo tras cerrar el tab, igual que ya sobrevive a
+un disconnect; "cerrar tab" en la UI no debería significar "matar el proceso
+remoto" salvo que el usuario lo pida explícito, ver Fase I).
+
+**`AcpHost` cambia de forma**: en vez de una interfaz "una sesión", pasa a ser
+(o a envolver) el `AcpSessionManager`. Revisar si conviene mantener `AcpHost`
+como fachada de UN tab (para no romper `App.kt`/`ChatScreen` de golpe) mientras
+`AcpSessionManager` vive por debajo — decisión de implementación a tomar en el
+momento, no bloqueante para el resto del plan.
+
+**Reutilización de la conexión SSH**: hoy `AndroidAcpHost.connect()` abre un
+`SSHClient` nuevo cada vez; para varios tabs sobre el mismo perfil, extraer esa
+conexión a algo que viva mientras el `AcpSessionManager` viva, no por tab —
+`AndroidSsh.connect()` (ya extraído en Fase D, `android/.../AndroidSsh.kt`) ya
+devuelve la conexión desnuda, así que esta capa es la que hoy falta, no algo que
+haya que rehacer desde cero.
+
+### Fase I — UI: tabs de chat en paralelo
+
+**`TabRow` (Material3)** sobre `ChatScreen`: un tab por sesión abierta en el
+`AcpSessionManager`, "+" para abrir uno nuevo (mismo perfil que el tab activo,
+por ahora — ver "Preguntas abiertas"), long-press o botón "x" para cerrar con
+confirmación si hay un turno en curso, indicador visual (punto/badge) si un tab
+en background tiene streaming activo o un permiso pendiente (para no perderlo
+si el usuario está mirando otro tab). `ChatScreen` pasa a recibir el
+`AcpSessionState` del tab activo en vez de leerlo directo del host.
+
+**Alcance deliberadamente fuera de V1**: tabs de **Terminal** en paralelo (el
+usuario solo pidió tabs para chat; Terminal ya tiene tmux para multiplexar, ver
+la nota de diseño de Fase B/pivote a terminal) y tabs contra **servidores
+distintos** en simultáneo (cada tab de este plan comparte la conexión SSH del
+perfil activo — abrir tabs contra otro perfil implicaría otra conexión SSH en
+paralelo, ver preguntas abiertas).
+
+### Preguntas abiertas (para decidir antes/durante la ejecución)
+
+1. ¿Los tabs nuevos son siempre del mismo perfil que el activo, o se puede elegir
+   perfil al abrir un tab (implica más de una conexión SSH viva a la vez, no solo
+   más de un `AcpSession`)? Este plan asume "mismo perfil" para V1 por ser lo que
+   pidió el usuario explícitamente ("tabs para chats en paralelo" sobre el flujo
+   que ya tienen), pero el diseño de `AcpSessionManager` no lo bloquea a futuro.
+2. ¿Cierre de un tab mata el proceso remoto (`kill` + `rm -rf runDir`) o lo deja
+   corriendo (igual que un disconnect normal, reconectable después)? Recomendado:
+   dejarlo corriendo por defecto (consistente con el resto del diseño de Fase B)
+   y ofrecer "cerrar y terminar el agente remoto" como acción separada y explícita.
+3. Límite de tabs simultáneos — sin límite puede levantar demasiados procesos
+   `claude-code-acp` en el servidor; considerar un tope configurable (p. ej. 5)
+   con aviso, no bloqueo silencioso.
+4. ¿La "clave nunca visible" debe extenderse a que tampoco se pueda copiar sin el
+   botón explícito "Mostrar clave" (portapapeles = fuga potencial igual de
+   real que pintarla en pantalla)? Este plan asume que "Mostrar" + copiar desde
+   ahí es aceptable (el usuario ya la generó/importó y confía en su propio
+   dispositivo), pero vale confirmarlo.
+
+### Siguiente paso concreto
+
+Fase F no depende de nada pendiente — arranca por el storage antes de tocar
+ninguna UI, igual que el resto de fases de este plan ya siguieron ese orden.
