@@ -131,8 +131,17 @@ class AcpClient(
         framer.writeLine(RpcOut.response(request.requestId, outcome.toJson()))
     }
 
-    /** Cierra el cliente (cancela el lector; el transporte lo cierra el host). */
+    /**
+     * Cierra el cliente (cancela el lector; el transporte lo cierra el host).
+     *
+     * Cancelar [readerJob] dispara el mismo `finally` que un EOF real (ver
+     * [start]) — hay que silenciar [onEof] ANTES de cancelar, o un cierre
+     * intencionado (p. ej. al cerrar un tab o al reconectar reusando su
+     * mismo tabId) se reporta como "conexión perdida" y tumba la sesión
+     * nueva que lo reemplazó.
+     */
     fun close() {
+        onEof = null
         readerJob?.cancel()
         readerJob = null
     }
