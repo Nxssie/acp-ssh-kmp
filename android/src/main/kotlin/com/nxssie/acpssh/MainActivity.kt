@@ -7,19 +7,22 @@ import androidx.activity.enableEdgeToEdge
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var host: AndroidSshTerminalHost
+    private lateinit var terminalHost: AndroidSshTerminalHost
+    private lateinit var acpHost: AndroidAcpHost
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        host = AndroidSshTerminalHost(applicationContext)
+        terminalHost = AndroidSshTerminalHost(applicationContext)
+        acpHost = AndroidAcpHost(applicationContext)
         setContent {
-            App(host)
+            App(terminalHost, acpHost)
         }
     }
 
     override fun onDestroy() {
-        host.disconnect()
+        terminalHost.disconnect()
+        acpHost.disconnect()
         super.onDestroy()
     }
 }

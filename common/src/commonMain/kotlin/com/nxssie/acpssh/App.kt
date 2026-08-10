@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -14,21 +15,32 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import com.nxssie.acpssh.session.AcpHost
+import com.nxssie.acpssh.session.AcpMode
 import com.nxssie.acpssh.session.ConnectStatus
+import com.nxssie.acpssh.session.HasConnection
 import com.nxssie.acpssh.session.PendingHostKey
 import com.nxssie.acpssh.session.TerminalHost
+import com.nxssie.acpssh.ui.ChatScreen
 import com.nxssie.acpssh.ui.ConnectionScreen
 import com.nxssie.acpssh.ui.TerminalScreen
 
+/**
+ * Punto de entrada común: el usuario elige modo (Terminal | Chat) en la
+ * pantalla de conexión y cada modo monta su pantalla sobre su host. Los dos
+ * hosts comparten estados de conexión y TOFU, así que el despacho es por modo.
+ */
 @Composable
-fun App(host: TerminalHost) {
+fun App(terminalHost: TerminalHost, acpHost: AcpHost) {
     val colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
     MaterialTheme(colorScheme = colorScheme) {
         Surface(
@@ -37,15 +49,32 @@ fun App(host: TerminalHost) {
                 .windowInsetsPadding(WindowInsets.safeDrawing),
             color = MaterialTheme.colorScheme.background,
         ) {
-            val connection by host.connection.collectAsState()
+            var mode by rememberSaveable { mutableStateOf(AcpMode.TERMINAL) }
+            val active: HasConnection = if (mode == AcpMode.TERMINAL) terminalHost else acpHost
+            val connection by active.connection.collectAsState()
             when (connection.status) {
-                ConnectStatus.CONNECTED -> TerminalScreen(host)
+                ConnectStatus.CONNECTED -> when (mode) {
+                    AcpMode.TERMINAL -> TerminalScreen(terminalHost)
+                    AcpMode.CHAT -> ChatScreen(acpHost)
+                }
                 ConnectStatus.CONNECTING -> LoadingScreen()
-                ConnectStatus.AWAITING_HOST_KEY -> HostKeyDialog(host, connection.pendingHostKey)
+                ConnectStatus.AWAITING_HOST_KEY -> HostKeyDialog(
+                    pending = connection.pendingHostKey,
+                    onAccept = {
+                        if (mode == AcpMode.TERMINAL) terminalHost.acceptHostKey() else acpHost.acceptHostKey()
+                    },
+                    onReject = {
+                        if (mode == AcpMode.TERMINAL) terminalHost.rejectHostKey() else acpHost.rejectHostKey()
+                    },
+                )
                 ConnectStatus.DISCONNECTED, ConnectStatus.FAILED -> ConnectionScreen(
-                    initial = host.loadLastConfig(),
+                    initial = active.loadLastConfig(),
                     error = connection.error,
-                    onConnect = host::connect,
+                    mode = mode,
+                    onModeChange = { mode = it },
+                    onConnect = { config ->
+                        if (mode == AcpMode.TERMINAL) terminalHost.connect(config) else acpHost.connect(config)
+                    },
                 )
             }
         }
@@ -60,10 +89,14 @@ private fun LoadingScreen() {
 }
 
 @Composable
-private fun HostKeyDialog(host: TerminalHost, pending: PendingHostKey?) {
+private fun HostKeyDialog(
+    pending: PendingHostKey?,
+    onAccept: () -> Unit,
+    onReject: () -> Unit,
+) {
     if (pending == null) return
     AlertDialog(
-        onDismissRequest = host::rejectHostKey,
+        onDismissRequest = onReject,
         title = { Text("Verificar clave del host") },
         text = {
             Column {
@@ -76,7 +109,7 @@ private fun HostKeyDialog(host: TerminalHost, pending: PendingHostKey?) {
                 )
             }
         },
-        confirmButton = { TextButton(onClick = host::acceptHostKey) { Text("Aceptar") } },
-        dismissButton = { TextButton(onClick = host::rejectHostKey) { Text("Rechazar") } },
+        confirmButton = { TextButton(onClick = onAccept) { Text("Aceptar") } },
+        dismissButton = { TextButton(onClick = onReject) { Text("Rechazar") } },
     )
 }

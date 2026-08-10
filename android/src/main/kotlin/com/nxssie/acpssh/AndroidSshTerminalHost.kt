@@ -24,7 +24,6 @@ import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.connection.channel.direct.PTYMode
 import net.schmizz.sshj.userauth.keyprovider.KeyProvider
-import net.schmizz.sshj.userauth.keyprovider.OpenSSHKeyFile
 import java.io.IOException
 import java.io.InputStream
 
@@ -70,17 +69,7 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
         sessionScope = sc
         sc.launch {
             try {
-                val ssh = SSHClient()
-                ssh.addHostKeyVerifier(verifier)
-                ssh.connectTimeout = 10_000
-                ssh.connection.keepAlive.keepAliveInterval = 30
-                ssh.connect(config.host, config.port)
-                try {
-                    ssh.authPublickey(config.username, keyProviderFromPem(config.privateKeyPem))
-                } catch (e: Exception) {
-                    runCatching { ssh.disconnect() }
-                    throw e
-                }
+                val ssh = AndroidSsh.connect(config, verifier)
                 val session = ssh.startSession()
                 session.allocatePTY("xterm-256color", 80, 24, 0, 0, emptyMap<PTYMode, Int>())
                 val sh = session.startShell()
@@ -223,13 +212,5 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
         }
     }
 
-    private fun keyProviderFromPem(pem: String): KeyProvider {
-        val header = pem.substringBefore('\n')
-        return if (header.contains("OPENSSH PRIVATE KEY")) {
-            com.hierynomus.sshj.userauth.keyprovider.OpenSSHKeyV1KeyFile()
-                .apply { init(pem, null, null) }
-        } else {
-            OpenSSHKeyFile().apply { init(pem, null, null) }
-        }
-    }
+    private fun keyProviderFromPem(pem: String): KeyProvider = AndroidSsh.keyProviderFromPem(pem)
 }

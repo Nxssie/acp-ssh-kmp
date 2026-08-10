@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -30,12 +31,15 @@ import androidx.compose.ui.unit.sp
 import com.nxssie.acpssh.crypto.generateEd25519SshKey
 import com.nxssie.acpssh.io.rememberPemExporter
 import com.nxssie.acpssh.io.rememberPemImporter
+import com.nxssie.acpssh.session.AcpMode
 import com.nxssie.acpssh.session.TerminalConfig
 
 @Composable
 fun ConnectionScreen(
     initial: TerminalConfig?,
     error: String?,
+    mode: AcpMode,
+    onModeChange: (AcpMode) -> Unit,
     onConnect: (TerminalConfig) -> Unit,
 ) {
     var host by rememberSaveable { mutableStateOf(initial?.host ?: "") }
@@ -43,7 +47,7 @@ fun ConnectionScreen(
     var username by rememberSaveable { mutableStateOf(initial?.username ?: "") }
     var pem by rememberSaveable { mutableStateOf(initial?.privateKeyPem ?: "") }
     var command by rememberSaveable {
-        mutableStateOf(initial?.remoteCommand ?: "tmux new -As claude-terminal")
+        mutableStateOf(initial?.remoteCommand ?: if (mode == AcpMode.TERMINAL) "tmux new -As claude-terminal" else "claude-code-acp")
     }
     var generatedPublicKey by rememberSaveable { mutableStateOf(initial?.publicKeyLine) }
 
@@ -61,6 +65,24 @@ fun ConnectionScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Conexión SSH", style = MaterialTheme.typography.titleLarge)
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterChip(
+                selected = mode == AcpMode.TERMINAL,
+                onClick = { onModeChange(AcpMode.TERMINAL) },
+                label = { Text("Terminal") },
+                modifier = Modifier.weight(1f),
+            )
+            FilterChip(
+                selected = mode == AcpMode.CHAT,
+                onClick = { onModeChange(AcpMode.CHAT) },
+                label = { Text("Chat ACP") },
+                modifier = Modifier.weight(1f),
+            )
+        }
 
         OutlinedTextField(
             value = host,
@@ -147,7 +169,12 @@ fun ConnectionScreen(
         OutlinedTextField(
             value = command,
             onValueChange = { command = it },
-            label = { Text("Comando remoto (vacío = shell)") },
+            label = {
+                Text(
+                    if (mode == AcpMode.TERMINAL) "Comando remoto (vacío = shell)"
+                    else "Comando de arranque del agente ACP (remoto)",
+                )
+            },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
