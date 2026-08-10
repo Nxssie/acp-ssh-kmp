@@ -745,39 +745,42 @@ haya que rehacer desde cero.
 ### Fase I — UI: tabs de chat en paralelo
 
 **`TabRow` (Material3)** sobre `ChatScreen`: un tab por sesión abierta en el
-`AcpSessionManager`, "+" para abrir uno nuevo (mismo perfil que el tab activo,
-por ahora — ver "Preguntas abiertas"), long-press o botón "x" para cerrar con
-confirmación si hay un turno en curso, indicador visual (punto/badge) si un tab
-en background tiene streaming activo o un permiso pendiente (para no perderlo
-si el usuario está mirando otro tab). `ChatScreen` pasa a recibir el
-`AcpSessionState` del tab activo en vez de leerlo directo del host.
+`AcpSessionManager`, "+" para abrir uno nuevo (siempre del mismo perfil que el
+tab activo, decisión cerrada — ver "Decisiones cerradas con el usuario"),
+long-press o botón "x" para cerrar (deja el proceso remoto corriendo, con una
+acción separada "cerrar y terminar agente" para matarlo explícitamente),
+tope configurable de tabs simultáneos (default 5, con aviso al llegar al
+límite), indicador visual (punto/badge) si un tab en background tiene
+streaming activo o un permiso pendiente (para no perderlo si el usuario está
+mirando otro tab). `ChatScreen` pasa a recibir el `AcpSessionState` del tab
+activo en vez de leerlo directo del host.
 
 **Alcance deliberadamente fuera de V1**: tabs de **Terminal** en paralelo (el
 usuario solo pidió tabs para chat; Terminal ya tiene tmux para multiplexar, ver
 la nota de diseño de Fase B/pivote a terminal) y tabs contra **servidores
 distintos** en simultáneo (cada tab de este plan comparte la conexión SSH del
 perfil activo — abrir tabs contra otro perfil implicaría otra conexión SSH en
-paralelo, ver preguntas abiertas).
+paralelo, descartado para V1, ver "Decisiones cerradas con el usuario").
 
-### Preguntas abiertas (para decidir antes/durante la ejecución)
+### Decisiones cerradas con el usuario (2026-08-10)
 
-1. ¿Los tabs nuevos son siempre del mismo perfil que el activo, o se puede elegir
-   perfil al abrir un tab (implica más de una conexión SSH viva a la vez, no solo
-   más de un `AcpSession`)? Este plan asume "mismo perfil" para V1 por ser lo que
-   pidió el usuario explícitamente ("tabs para chats en paralelo" sobre el flujo
-   que ya tienen), pero el diseño de `AcpSessionManager` no lo bloquea a futuro.
-2. ¿Cierre de un tab mata el proceso remoto (`kill` + `rm -rf runDir`) o lo deja
-   corriendo (igual que un disconnect normal, reconectable después)? Recomendado:
-   dejarlo corriendo por defecto (consistente con el resto del diseño de Fase B)
-   y ofrecer "cerrar y terminar el agente remoto" como acción separada y explícita.
-3. Límite de tabs simultáneos — sin límite puede levantar demasiados procesos
-   `claude-code-acp` en el servidor; considerar un tope configurable (p. ej. 5)
-   con aviso, no bloqueo silencioso.
-4. ¿La "clave nunca visible" debe extenderse a que tampoco se pueda copiar sin el
-   botón explícito "Mostrar clave" (portapapeles = fuga potencial igual de
-   real que pintarla en pantalla)? Este plan asume que "Mostrar" + copiar desde
-   ahí es aceptable (el usuario ya la generó/importó y confía en su propio
-   dispositivo), pero vale confirmarlo.
+Las cuatro preguntas abiertas de este plan ya se resolvieron con el usuario;
+quedan fijadas para que DeepSeek ejecute sin tener que volver a decidirlas:
+
+1. **Perfil por tab: siempre el mismo que el tab activo.** No se puede elegir
+   perfil al abrir un tab nuevo en V1 — todos los tabs comparten la única
+   conexión SSH del perfil activo, `AcpSessionManager` no gestiona más de una
+   conexión a la vez. (El diseño no lo bloquea a futuro si se pidiera después.)
+2. **Cerrar un tab deja el proceso remoto corriendo.** Igual que un disconnect
+   normal: reconectable después, consistente con el resto del diseño de Fase B.
+   Se añade una acción separada y explícita "cerrar y terminar el agente
+   remoto" para quien sí quiera matar el proceso.
+3. **Límite de tabs simultáneos: tope configurable, default 5.** Avisa al
+   llegar al tope en vez de bloquear en silencio o permitir un número
+   ilimitado de procesos `claude-code-acp` en el servidor.
+4. **Copiar la clave desde "Mostrar clave" está permitido.** La fricción
+   deliberada vive en el paso de "Mostrar" (no automático); una vez visible,
+   copiarla al portapapeles es un flujo normal, sin bloqueo adicional.
 
 ### Siguiente paso concreto
 
