@@ -85,6 +85,16 @@ object RemoteAcpProcess {
             "{ [ -f $WRITER_PID_FILE ] && kill \"\$(cat $WRITER_PID_FILE)\" 2>/dev/null; :; }; " +
             "echo \$\$ > $WRITER_PID_FILE; exec cat >> $STDIN_FIFO"
 
+    /**
+     * Mata el agente remoto de un run dir y borra el directorio (Fase H: acción
+     * explícita "cerrar y terminar agente"). Distinto de cerrar un tab, que deja
+     * el proceso vivo para reconectar después.
+     */
+    fun killCommand(runDir: String): String {
+        val pidPath = shellQuote("$runDir/$PID_FILE")
+        return "{ [ -f $pidPath ] && kill \"\$(cat $pidPath)\" 2>/dev/null; :; }; rm -rf ${shellQuote(runDir)}"
+    }
+
     /** Quoting POSIX sh de un valor arbitrario como literal de una sola palabra. */
     fun shellQuote(value: String): String =
         "'" + value.replace("'", "'\"'\"'") + "'"

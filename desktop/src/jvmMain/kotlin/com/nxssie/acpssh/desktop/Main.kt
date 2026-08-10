@@ -5,6 +5,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.nxssie.acpssh.App
 import com.nxssie.acpssh.DesktopAcpHost
+import com.nxssie.acpssh.DesktopProfileStore
 import com.nxssie.acpssh.DesktopSshTerminalHost
 import com.nxssie.acpssh.SshConnectionConfig
 import com.nxssie.acpssh.SshSession
@@ -46,7 +47,8 @@ fun main(args: Array<String>) {
         Window(onCloseRequest = ::exitApplication, title = "ACP Terminal") {
             val terminalHost = remember { DesktopSshTerminalHost() }
             val acpHost = remember { DesktopAcpHost() }
-            App(terminalHost, acpHost)
+            val profileStore = remember { DesktopProfileStore() }
+            App(terminalHost, acpHost, profileStore)
         }
     }
 }

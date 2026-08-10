@@ -9,14 +9,16 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var terminalHost: AndroidSshTerminalHost
     private lateinit var acpHost: AndroidAcpHost
+    private lateinit var profileStore: SecureStoreProfileStore
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         terminalHost = AndroidSshTerminalHost(applicationContext)
         acpHost = AndroidAcpHost(applicationContext)
+        profileStore = SecureStoreProfileStore(applicationContext)
         setContent {
-            App(terminalHost, acpHost)
+            App(terminalHost, acpHost, profileStore)
         }
     }
 

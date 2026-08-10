@@ -44,5 +44,4 @@ interface TerminalHost : HasConnection {
     fun send(text: String)
     fun resize(cols: Int, rows: Int)
     fun disconnect()
-    override fun loadLastConfig(): TerminalConfig?
 }

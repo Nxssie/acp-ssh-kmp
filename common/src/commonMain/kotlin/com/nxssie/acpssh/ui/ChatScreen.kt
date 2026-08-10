@@ -14,26 +14,36 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -47,25 +57,145 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nxssie.acpssh.acp.PermissionOutcome
+import com.nxssie.acpssh.acp.PermissionRequest
 import com.nxssie.acpssh.acp.ToolCallStatus
 import com.nxssie.acpssh.diff.UnifiedDiff
 import com.nxssie.acpssh.markdown.Markdown
 import com.nxssie.acpssh.session.AcpHost
 import com.nxssie.acpssh.session.AcpSessionState
+import com.nxssie.acpssh.session.AcpTabState
 import com.nxssie.acpssh.session.ChatBubble
 import com.nxssie.acpssh.session.ChatRole
 import com.nxssie.acpssh.session.PlanEntryUi
 import com.nxssie.acpssh.session.PermissionUi
 import com.nxssie.acpssh.session.ToolCallUi
 
-/** Chat ACP (Fase D/E): burbujas con markdown, tool calls expandibles con diff, plan, permisos. */
+/**
+ * Chat ACP multi-tab (Fase I): barra de tabs sobre el contenido del tab activo.
+ * Un tab en background con streaming o permiso pendiente muestra un punto; las
+ * acciones de prompt/permiso/cancelar van siempre al tab activo. "+" abre un
+ * tab nuevo del mismo perfil (tope [AcpHost.maxTabs], con aviso al alcanzarlo).
+ */
 @Composable
 fun ChatScreen(host: AcpHost) {
-    val state by host.session.collectAsState()
+    val tabs by host.tabs.collectAsState()
+    val activeTabId by host.activeTabId.collectAsState()
+    val active = tabs.firstOrNull { it.tabId == activeTabId }
+    val snackbarHostState = remember { SnackbarHostState() }
+    var limitNotice by remember { mutableStateOf(false) }
+
+    LaunchedEffect(limitNotice) {
+        if (limitNotice) {
+            snackbarHostState.showSnackbar("Máximo ${host.maxTabs} tabs simultáneos")
+            limitNotice = false
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        ChatTabsRow(
+            tabs = tabs,
+            activeTabId = activeTabId,
+            onSelect = host::selectTab,
+            onClose = host::closeTab,
+            onNew = {
+                if (tabs.size >= host.maxTabs) limitNotice = true else host.openTab()
+            },
+        )
+        if (active == null) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else {
+            // Estado (input, scroll) independiente por tab.
+            key(active.tabId) {
+                ChatContent(
+                    state = active.session,
+                    onSend = host::sendPrompt,
+                    onCancelTurn = host::cancelTurn,
+                    onToggleToolCall = host::toggleToolCall,
+                    onDisconnect = host::disconnect,
+                    onCloseTab = { host.closeTab(active.tabId) },
+                    onKillAgent = { host.killTabAgent(active.tabId) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        SnackbarHost(snackbarHostState)
+    }
+
+    active?.session?.pendingPermission?.let { pending ->
+        PermissionDialog(pending, onRespond = host::respondPermission)
+    }
+}
+
+@Composable
+private fun ChatTabsRow(
+    tabs: List<AcpTabState>,
+    activeTabId: String?,
+    onSelect: (String) -> Unit,
+    onClose: (String) -> Unit,
+    onNew: () -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        ScrollableTabRow(
+            selectedTabIndex = tabs.indexOfFirst { it.tabId == activeTabId }.coerceAtLeast(0),
+            modifier = Modifier.weight(1f),
+            edgePadding = 4.dp,
+        ) {
+            tabs.forEachIndexed { index, tab ->
+                val isActive = tab.tabId == activeTabId
+                Tab(
+                    selected = isActive,
+                    onClick = { onSelect(tab.tabId) },
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val needsAttention = !isActive &&
+                                (tab.session.busy || tab.session.pendingPermission != null)
+                            if (needsAttention) {
+                                Box(
+                                    Modifier
+                                        .size(8.dp)
+                                        .background(MaterialTheme.colorScheme.error, CircleShape),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            Text(
+                                "Chat ${index + 1}",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "✕",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.clickable { onClose(tab.tabId) },
+                            )
+                        }
+                    },
+                )
+            }
+        }
+        TextButton(onClick = onNew) { Text("+ Nuevo") }
+    }
+}
+
+@Composable
+private fun ChatContent(
+    state: AcpSessionState,
+    onSend: (String) -> Unit,
+    onCancelTurn: () -> Unit,
+    onToggleToolCall: (String) -> Unit,
+    onDisconnect: () -> Unit,
+    onCloseTab: () -> Unit,
+    onKillAgent: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val listState = rememberLazyListState()
     var input by remember { mutableStateOf("") }
 
@@ -74,8 +204,24 @@ fun ChatScreen(host: AcpHost) {
         if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.size - 1)
     }
 
-    Column(Modifier.fillMaxSize()) {
-        ChatHeader(state, onDisconnect = host::disconnect)
+    Column(modifier.fillMaxWidth()) {
+        ChatHeader(state, onDisconnect, onCloseTab, onKillAgent)
+
+        if (state.error != null && state.sessionId == null) {
+            // El tab no consiguió arrancar (agente no instalado, handshake agotado).
+            Column(
+                Modifier.weight(1f).fillMaxWidth().padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("No se pudo iniciar la sesión", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    state.error!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            return@Column
+        }
 
         LazyColumn(
             state = listState,
@@ -92,8 +238,17 @@ fun ChatScreen(host: AcpHost) {
                 Bubble(bubble)
             }
             itemsIndexed(state.toolCalls) { _, tool ->
-                ToolCallCard(tool, onToggle = { host.toggleToolCall(tool.id) })
+                ToolCallCard(tool, onToggle = { onToggleToolCall(tool.id) })
             }
+        }
+
+        state.error?.let {
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
         }
 
         ChatInput(
@@ -103,22 +258,23 @@ fun ChatScreen(host: AcpHost) {
             onSend = {
                 val text = input.trim()
                 if (text.isNotEmpty() && !state.busy) {
-                    host.sendPrompt(text)
+                    onSend(text)
                     input = ""
                 }
             },
-            onCancel = host::cancelTurn,
+            onCancel = onCancelTurn,
         )
-    }
-
-    val pending = state.pendingPermission
-    if (pending != null) {
-        PermissionDialog(pending, host)
     }
 }
 
 @Composable
-private fun ChatHeader(state: AcpSessionState, onDisconnect: () -> Unit) {
+private fun ChatHeader(
+    state: AcpSessionState,
+    onDisconnect: () -> Unit,
+    onCloseTab: () -> Unit,
+    onKillAgent: () -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         Modifier
             .fillMaxWidth()
@@ -135,6 +291,25 @@ private fun ChatHeader(state: AcpSessionState, onDisconnect: () -> Unit) {
                     "Sesión ${it.take(8)}…",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Box {
+            TextButton(onClick = { menuOpen = true }) { Text("⋮") }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                DropdownMenuItem(
+                    text = { Text("Cerrar tab") },
+                    onClick = {
+                        menuOpen = false
+                        onCloseTab()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Cerrar y terminar agente") },
+                    onClick = {
+                        menuOpen = false
+                        onKillAgent()
+                    },
                 )
             }
         }
@@ -229,7 +404,7 @@ private fun InlineText(inline: List<Markdown.Inline>, streaming: Boolean) {
 }
 
 private fun appendInline(
-    builder: androidx.compose.ui.text.AnnotatedString.Builder,
+    builder: AnnotatedString.Builder,
     inline: Markdown.Inline,
     primary: Color,
 ) {
@@ -238,7 +413,7 @@ private fun appendInline(
         is Markdown.Inline.Code -> builder.withStyle(
             SpanStyle(
                 fontFamily = FontFamily.Monospace,
-                background = Color(0x33000000.toInt()),
+                background = Color(0x33000000),
                 fontSize = 12.sp,
             ),
         ) { append(inline.text) }
@@ -259,7 +434,7 @@ private fun CodeBlock(block: Markdown.Block.CodeBlock) {
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Color(0x1A000000.toInt()))
+            .background(Color(0x1A000000))
             .padding(8.dp),
     ) {
         block.language?.takeIf { it.isNotEmpty() }?.let {
@@ -346,9 +521,9 @@ private fun ToolCallCard(tool: ToolCallUi, onToggle: () -> Unit) {
 
 @Composable
 private fun statusColor(status: String?): Color = when (status) {
-    ToolCallStatus.COMPLETED -> Color(0xFF2E7D32.toInt())
+    ToolCallStatus.COMPLETED -> Color(0xFF2E7D32)
     ToolCallStatus.FAILED -> MaterialTheme.colorScheme.error
-    ToolCallStatus.IN_PROGRESS -> Color(0xFF1565C0.toInt())
+    ToolCallStatus.IN_PROGRESS -> Color(0xFF1565C0)
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
@@ -358,15 +533,15 @@ private fun DiffView(path: String, oldText: String?, newText: String) {
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Color(0xFF101010.toInt()))
+            .background(Color(0xFF101010))
             .padding(6.dp),
     ) {
         lines.forEach { line ->
             val color = when (line.kind) {
-                UnifiedDiff.Kind.ADD -> Color(0xFF7CD47C.toInt())
-                UnifiedDiff.Kind.DELETE -> Color(0xFFF27979.toInt())
-                UnifiedDiff.Kind.HEADER -> Color(0xFF6BA7E8.toInt())
-                UnifiedDiff.Kind.CONTEXT -> Color(0xFFCCCCCC.toInt())
+                UnifiedDiff.Kind.ADD -> Color(0xFF7CD47C)
+                UnifiedDiff.Kind.DELETE -> Color(0xFFF27979)
+                UnifiedDiff.Kind.HEADER -> Color(0xFF6BA7E8)
+                UnifiedDiff.Kind.CONTEXT -> Color(0xFFCCCCCC)
             }
             Text(
                 line.text,
@@ -379,10 +554,13 @@ private fun DiffView(path: String, oldText: String?, newText: String) {
 }
 
 @Composable
-private fun PermissionDialog(pending: PermissionUi, host: AcpHost) {
+private fun PermissionDialog(
+    pending: PermissionUi,
+    onRespond: (PermissionRequest, PermissionOutcome) -> Unit,
+) {
     AlertDialog(
         onDismissRequest = {
-            host.respondPermission(pending.request, PermissionOutcome.Cancelled)
+            onRespond(pending.request, PermissionOutcome.Cancelled)
         },
         title = { Text("Permiso requerido") },
         text = {
@@ -408,7 +586,7 @@ private fun PermissionDialog(pending: PermissionUi, host: AcpHost) {
             Column {
                 pending.request.options.forEach { option ->
                     Button(
-                        onClick = { host.respondPermission(pending.request, PermissionOutcome.Selected(option.optionId)) },
+                        onClick = { onRespond(pending.request, PermissionOutcome.Selected(option.optionId)) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 2.dp),
@@ -420,7 +598,7 @@ private fun PermissionDialog(pending: PermissionUi, host: AcpHost) {
         },
         dismissButton = {
             TextButton(onClick = {
-                host.respondPermission(pending.request, PermissionOutcome.Cancelled)
+                onRespond(pending.request, PermissionOutcome.Cancelled)
             }) {
                 Text("Cancelar")
             }

@@ -45,12 +45,10 @@ class DesktopSshTerminalHost : TerminalHost {
     private var job: Job? = null
     private var session: SshSession? = null
     private var shell: PtyShell? = null
-    private var lastConfig: TerminalConfig? = null
     private var writeChannel: Channel<Command>? = null
 
     override fun connect(config: TerminalConfig) {
         disconnect()
-        lastConfig = config
         _connection.value = ConnectionState(ConnectStatus.CONNECTING)
         job = scope.launch {
             try {
@@ -173,8 +171,6 @@ class DesktopSshTerminalHost : TerminalHost {
         session = null
         _connection.value = ConnectionState(ConnectStatus.DISCONNECTED)
     }
-
-    override fun loadLastConfig(): TerminalConfig? = lastConfig
 
     private fun TerminalConfig.toSshConfig() = SshConnectionConfig(
         host = host,

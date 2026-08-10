@@ -4,52 +4,31 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import com.nxssie.acpssh.session.TerminalConfig
 
 /**
- * Preferencias cifradas (AndroidX Security): clave privada PEM, config de
- * conexión y host keys aceptadas (TOFU). No se escribe ningún secreto en claro.
+ * Preferencias cifradas (AndroidX Security) compartidas por [SecureStore]
+ * (host keys TOFU) y [SecureStoreProfileStore] (perfiles/claves/comandos):
+ * mismo archivo `acp_ssh_secure`, claves distintas. No se escribe ningún
+ * secreto en claro.
  */
+internal fun secureSharedPreferences(context: Context): SharedPreferences {
+    val appContext = context.applicationContext
+    val masterKey = MasterKey.Builder(appContext)
+        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+        .build()
+    return EncryptedSharedPreferences.create(
+        appContext,
+        "acp_ssh_secure",
+        masterKey,
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+    )
+}
+
+/** Host keys aceptadas por Trust On First Use. */
 class SecureStore(context: Context) {
 
-    private val prefs: SharedPreferences = run {
-        val appContext = context.applicationContext
-        val masterKey = MasterKey.Builder(appContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        EncryptedSharedPreferences.create(
-            appContext,
-            "acp_ssh_secure",
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
-    }
-
-    fun saveConfig(config: TerminalConfig) {
-        prefs.edit()
-            .putString(KEY_HOST, config.host)
-            .putString(KEY_PORT, config.port.toString())
-            .putString(KEY_USER, config.username)
-            .putString(KEY_PEM, config.privateKeyPem)
-            .putString(KEY_COMMAND, config.remoteCommand.orEmpty())
-            .putString(KEY_PUBLIC, config.publicKeyLine.orEmpty())
-            .apply()
-    }
-
-    fun loadConfig(): TerminalConfig? {
-        val host = prefs.getString(KEY_HOST, null) ?: return null
-        val user = prefs.getString(KEY_USER, null) ?: return null
-        val pem = prefs.getString(KEY_PEM, null) ?: return null
-        return TerminalConfig(
-            host = host,
-            port = prefs.getString(KEY_PORT, null)?.toIntOrNull() ?: 22,
-            username = user,
-            privateKeyPem = pem,
-            remoteCommand = prefs.getString(KEY_COMMAND, null)?.takeIf { it.isNotBlank() },
-            publicKeyLine = prefs.getString(KEY_PUBLIC, null)?.takeIf { it.isNotBlank() },
-        )
-    }
+    private val prefs = secureSharedPreferences(context)
 
     fun acceptedKeys(host: String): Set<String> =
         prefs.getStringSet(HOST_KEY_PREFIX + host, emptySet())?.toSet() ?: emptySet()
@@ -61,12 +40,6 @@ class SecureStore(context: Context) {
     }
 
     private companion object {
-        const val KEY_HOST = "host"
-        const val KEY_PORT = "port"
-        const val KEY_USER = "user"
-        const val KEY_PEM = "pem"
-        const val KEY_COMMAND = "command"
-        const val KEY_PUBLIC = "public_key"
         const val HOST_KEY_PREFIX = "hostkey:"
     }
 }

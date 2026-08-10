@@ -1,8 +1,6 @@
 package com.nxssie.acpssh
 
 import android.content.Context
-import com.nxssie.acpssh.acp.RawByteChannel
-import com.nxssie.acpssh.acp.SshjExecRawChannel
 import com.nxssie.acpssh.session.ConnectionState
 import com.nxssie.acpssh.session.ConnectStatus
 import com.nxssie.acpssh.session.TerminalConfig
@@ -23,7 +21,6 @@ import kotlinx.coroutines.withContext
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.connection.channel.direct.PTYMode
-import net.schmizz.sshj.userauth.keyprovider.KeyProvider
 import java.io.IOException
 import java.io.InputStream
 
@@ -62,7 +59,6 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
 
     override fun connect(config: TerminalConfig) {
         disconnect()
-        store.saveConfig(config)
         _connection.value = ConnectionState(ConnectStatus.CONNECTING)
 
         val sc = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -193,24 +189,4 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
         client = null
         _connection.value = ConnectionState(ConnectStatus.DISCONNECTED)
     }
-
-    override fun loadLastConfig(): TerminalConfig? = store.loadConfig()
-
-    /**
-     * Abre un canal `exec` sin PTY sobre el cliente ya autenticado (pipes crudos
-     * para ACP). Requiere estar conectado; la Fase D refactorizará a un host que
-     * conecta directamente en modo exec.
-     */
-    fun openExec(command: String): RawByteChannel {
-        val ssh = client ?: throw IllegalStateException("not connected")
-        val session = ssh.startSession()
-        return try {
-            SshjExecRawChannel(session.exec(command), session)
-        } catch (e: Exception) {
-            session.close()
-            throw e
-        }
-    }
-
-    private fun keyProviderFromPem(pem: String): KeyProvider = AndroidSsh.keyProviderFromPem(pem)
 }

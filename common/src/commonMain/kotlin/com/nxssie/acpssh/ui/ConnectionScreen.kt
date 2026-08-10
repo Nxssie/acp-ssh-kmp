@@ -5,57 +5,89 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.nxssie.acpssh.crypto.generateEd25519SshKey
-import com.nxssie.acpssh.io.rememberPemExporter
-import com.nxssie.acpssh.io.rememberPemImporter
+import com.nxssie.acpssh.profile.ConnectionProfile
+import com.nxssie.acpssh.profile.ProfileStore
+import com.nxssie.acpssh.profile.SavedCommand
+import com.nxssie.acpssh.profile.newProfileId
 import com.nxssie.acpssh.session.AcpMode
-import com.nxssie.acpssh.session.TerminalConfig
 
+/**
+ * Formulario de conexión (Fase G): crea o edita un [ConnectionProfile]. La
+ * clave y el comando se eligen de listas gestionadas (nunca se pinta el PEM);
+ * el comando tiene un default explícito por modo ("shell (default)" /
+ * "claude-code-acp (default)", decisión cerrada #5) en vez de ir precargado.
+ *
+ * Al conectar se guarda el perfil (upsert por id) y se marca como último usado.
+ */
 @Composable
 fun ConnectionScreen(
-    initial: TerminalConfig?,
-    error: String?,
+    editing: ConnectionProfile?,
     mode: AcpMode,
     onModeChange: (AcpMode) -> Unit,
-    onConnect: (TerminalConfig) -> Unit,
+    store: ProfileStore,
+    onConnect: (ConnectionProfile) -> Unit,
+    onCancel: () -> Unit,
 ) {
-    var host by rememberSaveable { mutableStateOf(initial?.host ?: "") }
-    var port by rememberSaveable { mutableStateOf((initial?.port ?: 22).toString()) }
-    var username by rememberSaveable { mutableStateOf(initial?.username ?: "") }
-    var pem by rememberSaveable { mutableStateOf(initial?.privateKeyPem ?: "") }
-    var command by rememberSaveable {
-        mutableStateOf(initial?.remoteCommand ?: if (mode == AcpMode.TERMINAL) "tmux new -As claude-terminal" else "claude-code-acp")
+    // El estado del formulario se reinicia al cambiar de perfil editado.
+    key(editing?.id ?: "new") {
+        ConnectionForm(editing, mode, onModeChange, store, onConnect, onCancel)
     }
-    var generatedPublicKey by rememberSaveable { mutableStateOf(initial?.publicKeyLine) }
+}
 
-    val exportPem = rememberPemExporter()
-    val importPem = rememberPemImporter { imported ->
-        if (imported != pem) generatedPublicKey = null
-        pem = imported
-    }
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConnectionForm(
+    editing: ConnectionProfile?,
+    mode: AcpMode,
+    onModeChange: (AcpMode) -> Unit,
+    store: ProfileStore,
+    onConnect: (ConnectionProfile) -> Unit,
+    onCancel: () -> Unit,
+) {
+    var label by rememberSaveable { mutableStateOf(editing?.label ?: "") }
+    var host by rememberSaveable { mutableStateOf(editing?.host ?: "") }
+    var port by rememberSaveable { mutableStateOf((editing?.port ?: 22).toString()) }
+    var username by rememberSaveable { mutableStateOf(editing?.username ?: "") }
+    var selectedKeyId by rememberSaveable { mutableStateOf(editing?.keyId) }
+    var selectedCommandId by rememberSaveable { mutableStateOf(editing?.commandId) }
+    var showAllCommands by rememberSaveable { mutableStateOf(false) }
+
+    var keys by remember { mutableStateOf(store.listKeys()) }
+    var commands by remember { mutableStateOf(store.listCommands()) }
+    var showKeyManager by remember { mutableStateOf(false) }
+    var showCommandManager by remember { mutableStateOf(false) }
+
+    // Si la selección ya no existe (borrada) o no hay, cae a la primera clave.
+    val effectiveKeyId = selectedKeyId?.takeIf { id -> keys.any { it.id == id } }
+        ?: keys.firstOrNull()?.id
+
+    val defaultCommandLabel = if (mode == AcpMode.TERMINAL) "shell (default)" else "claude-code-acp (default)"
+    val visibleCommands = commands.filter { showAllCommands || it.mode == null || it.mode == mode }
+    val effectiveCommand = selectedCommandId?.let { id -> commands.firstOrNull { it.id == id } }
 
     Column(
         modifier = Modifier
@@ -64,26 +96,20 @@ fun ConnectionScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Conexión SSH", style = MaterialTheme.typography.titleLarge)
+        Text(
+            if (editing == null) "Nueva conexión" else "Editar conexión",
+            style = MaterialTheme.typography.titleLarge,
+        )
 
-        Row(
+        ModeChips(mode, onModeChange)
+
+        OutlinedTextField(
+            value = label,
+            onValueChange = { label = it },
+            label = { Text("Nombre (vacío = usuario@host)") },
+            singleLine = true,
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            FilterChip(
-                selected = mode == AcpMode.TERMINAL,
-                onClick = { onModeChange(AcpMode.TERMINAL) },
-                label = { Text("Terminal") },
-                modifier = Modifier.weight(1f),
-            )
-            FilterChip(
-                selected = mode == AcpMode.CHAT,
-                onClick = { onModeChange(AcpMode.CHAT) },
-                label = { Text("Chat ACP") },
-                modifier = Modifier.weight(1f),
-            )
-        }
-
+        )
         OutlinedTextField(
             value = host,
             onValueChange = { host = it },
@@ -106,99 +132,181 @@ fun ConnectionScreen(
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
-        OutlinedTextField(
-            value = pem,
-            onValueChange = {
-                // Si el usuario pega/edita otra clave a mano, la pública mostrada
-                // (de la última generada) ya no corresponde: se oculta.
-                if (it != pem) generatedPublicKey = null
-                pem = it
-            },
-            label = { Text("Clave privada (PEM)") },
-            placeholder = { Text("-----BEGIN OPENSSH PRIVATE KEY----- …") },
-            textStyle = LocalTextStyle.current.copy(
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 160.dp),
-        )
-        OutlinedButton(
-            onClick = {
-                val generated = generateEd25519SshKey(comment = "acp-ssh-kmp")
-                pem = generated.privateKeyPem
-                generatedPublicKey = generated.publicKeyLine
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("Generar nueva clave Ed25519")
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedButton(
-                onClick = importPem,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Importar .pem")
-            }
-            OutlinedButton(
-                onClick = { exportPem("acp-ssh-kmp.pem", pem) },
-                enabled = pem.isNotBlank(),
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Exportar .pem")
-            }
-        }
-        val publicKey = generatedPublicKey
-        if (publicKey != null) {
-            Text(
-                "Clave pública (añádela a ~/.ssh/authorized_keys en el servidor):",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            SelectionContainer {
-                Text(
-                    publicKey,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                )
-            }
-        }
-        OutlinedTextField(
-            value = command,
-            onValueChange = { command = it },
-            label = {
-                Text(
-                    if (mode == AcpMode.TERMINAL) "Comando remoto (vacío = shell)"
-                    else "Comando de arranque del agente ACP (remoto)",
-                )
-            },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+
+        KeySelector(
+            keys = keys,
+            selectedKeyId = effectiveKeyId,
+            onSelect = { selectedKeyId = it },
+            onManage = { showKeyManager = true },
         )
 
-        if (error != null) {
-            Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-        }
+        CommandSelector(
+            commands = visibleCommands,
+            hiddenCount = commands.size - visibleCommands.size,
+            selected = effectiveCommand,
+            defaultLabel = defaultCommandLabel,
+            showAll = showAllCommands,
+            onToggleShowAll = { showAllCommands = it },
+            onSelect = { selectedCommandId = it?.id },
+            onManage = { showCommandManager = true },
+        )
 
         Button(
             onClick = {
-                onConnect(
-                    TerminalConfig(
-                        host = host.trim(),
-                        port = port.toIntOrNull() ?: 22,
-                        username = username.trim(),
-                        privateKeyPem = pem.trim(),
-                        remoteCommand = command.trim().ifEmpty { null },
-                        publicKeyLine = generatedPublicKey,
-                    )
+                val keyId = effectiveKeyId ?: return@Button
+                val profile = ConnectionProfile(
+                    id = editing?.id ?: newProfileId(),
+                    label = label.trim().ifEmpty { "${username.trim()}@${host.trim()}" },
+                    host = host.trim(),
+                    port = port.toIntOrNull() ?: 22,
+                    username = username.trim(),
+                    keyId = keyId,
+                    commandId = effectiveCommand?.id,
+                    acpRunDir = editing?.acpRunDir,
+                    acpCwd = editing?.acpCwd,
                 )
+                store.saveProfile(profile)
+                store.setLastProfileId(profile.id)
+                onConnect(profile)
             },
+            enabled = effectiveKeyId != null && host.isNotBlank() && username.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Conectar")
+            Text("Guardar y conectar")
+        }
+        OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) {
+            Text("Volver")
+        }
+    }
+
+    if (showKeyManager) {
+        KeyManagerDialog(
+            store = store,
+            onDismiss = {
+                showKeyManager = false
+                keys = store.listKeys()
+            },
+        )
+    }
+    if (showCommandManager) {
+        CommandManagerDialog(
+            store = store,
+            mode = mode,
+            onDismiss = {
+                showCommandManager = false
+                commands = store.listCommands()
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun KeySelector(
+    keys: List<com.nxssie.acpssh.profile.SavedKey>,
+    selectedKeyId: String?,
+    onSelect: (String) -> Unit,
+    onManage: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+        OutlinedTextField(
+            value = keys.firstOrNull { it.id == selectedKeyId }?.label
+                ?: "Sin claves — crea o importa una",
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Clave privada") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            keys.forEach { key ->
+                DropdownMenuItem(
+                    text = { Text(key.label) },
+                    onClick = {
+                        onSelect(key.id)
+                        expanded = false
+                    },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("Gestionar claves…") },
+                onClick = {
+                    expanded = false
+                    onManage()
+                },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CommandSelector(
+    commands: List<SavedCommand>,
+    hiddenCount: Int,
+    selected: SavedCommand?,
+    defaultLabel: String,
+    showAll: Boolean,
+    onToggleShowAll: (Boolean) -> Unit,
+    onSelect: (SavedCommand?) -> Unit,
+    onManage: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+        OutlinedTextField(
+            value = selected?.label ?: defaultLabel,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Comando remoto") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text(defaultLabel) },
+                onClick = {
+                    onSelect(null)
+                    expanded = false
+                },
+            )
+            commands.forEach { command ->
+                DropdownMenuItem(
+                    text = {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(command.label, modifier = Modifier.weight(1f))
+                            command.mode?.let {
+                                Text(
+                                    if (it == AcpMode.TERMINAL) "Terminal" else "Chat",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    },
+                    onClick = {
+                        onSelect(command)
+                        expanded = false
+                    },
+                )
+            }
+            if (hiddenCount > 0 || showAll) {
+                DropdownMenuItem(
+                    text = { Text(if (showAll) "Ver solo de este modo" else "Ver todos ($hiddenCount más)") },
+                    onClick = { onToggleShowAll(!showAll) },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("Gestionar comandos…") },
+                onClick = {
+                    expanded = false
+                    onManage()
+                },
+            )
         }
     }
 }

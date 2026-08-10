@@ -7,37 +7,54 @@ import kotlinx.coroutines.flow.StateFlow
 /** Modo de sesión seleccionable desde la pantalla de conexión. */
 enum class AcpMode { TERMINAL, CHAT }
 
-/** Lo común a [TerminalHost] y [AcpHost]: el estado de la conexión SSH y la última config. */
+/** Lo común a [TerminalHost] y [AcpHost]: el estado de la conexión SSH. */
 interface HasConnection {
     val connection: StateFlow<ConnectionState>
-    fun loadLastConfig(): TerminalConfig?
 }
 
 /**
- * Contrato del cliente de chat ACP, hermano de [TerminalHost]: mismo patrón
- * (estados de conexión + TOFU), pero hablando ACP por `exec` en vez de abrir
- * un shell con PTY. La UI (ChatScreen) nunca depende de SSHJ.
+ * Contrato del cliente de chat ACP (Fase H): una conexión SSH y N tabs de
+ * chat, cada uno con su proceso de agente remoto (ver [AcpSessionManager]).
+ * La UI (ChatScreen) nunca depende de SSHJ.
+ *
+ * Las acciones de prompt/permiso/cancelar/toggle operan sobre el tab activo
+ * ([activeTabId]); las peticiones de permiso de tabs en background se señalan
+ * con badge y se responden al activar ese tab.
  */
 interface AcpHost : HasConnection {
-    /** Estado de la sesión de chat (mensajes, tool calls, permiso pendiente…). */
-    val session: StateFlow<AcpSessionState>
+    /** Tabs abiertos, en orden de apertura. */
+    val tabs: StateFlow<List<AcpTabState>>
+    val activeTabId: StateFlow<String?>
+
+    /** Tope de tabs simultáneos (decisión cerrada #3: configurable, default 5). */
+    val maxTabs: Int
 
     fun connect(config: TerminalConfig)
     fun acceptHostKey()
     fun rejectHostKey()
 
-    /** Envía un prompt y queda en [AcpSessionState.busy] hasta el fin de turno. */
+    /** Abre un tab nuevo (mismo perfil que el activo, decisión cerrada #1). */
+    fun openTab()
+
+    /** Cierra el tab; el proceso remoto sigue vivo (decisión cerrada #2). */
+    fun closeTab(tabId: String)
+
+    /** Cierra el tab y termina el agente remoto (acción explícita). */
+    fun killTabAgent(tabId: String)
+
+    fun selectTab(tabId: String)
+
+    /** Envía un prompt en el tab activo (queda busy hasta el fin de turno). */
     fun sendPrompt(text: String)
 
-    /** Responde a un `session/request_permission` pendiente. */
+    /** Responde al `session/request_permission` pendiente del tab activo. */
     fun respondPermission(request: PermissionRequest, outcome: PermissionOutcome)
 
-    /** Expande/colapsa la tarjeta de una tool call en el chat. */
+    /** Expande/colapsa la tarjeta de una tool call en el tab activo. */
     fun toggleToolCall(id: String)
 
-    /** Cancela el turno en curso (notificación `session/cancel`). */
+    /** Cancela el turno en curso del tab activo (notificación `session/cancel`). */
     fun cancelTurn()
 
     fun disconnect()
-    override fun loadLastConfig(): TerminalConfig?
 }
