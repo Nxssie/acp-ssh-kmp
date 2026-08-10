@@ -47,6 +47,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -199,9 +200,29 @@ private fun ChatContent(
     val listState = rememberLazyListState()
     var input by remember { mutableStateOf("") }
 
-    // Autoscroll al último mensaje cuando llega contenido nuevo o streaming.
-    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.text?.length) {
-        if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.size - 1)
+    // Índice real del último item: plan (si hay) + mensajes + tool calls, en ese
+    // orden — mismo orden en que se declaran en el LazyColumn de abajo.
+    val totalItems = state.messages.size + state.toolCalls.size + if (state.plan.isNotEmpty()) 1 else 0
+
+    // Solo sigue el fondo del chat si el usuario no se alejó a propósito para leer
+    // historial; si scrollea hacia arriba, el contenido nuevo no lo debe "jalar"
+    // de vuelta. Se recalcula en cada cambio de layout, incluyendo el que produce
+    // nuestro propio animateScrollToItem — así vuelve a "true" al llegar al fondo.
+    val stickToBottom = remember { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.layoutInfo }.collect { info ->
+            val last = info.visibleItemsInfo.lastOrNull()
+            stickToBottom.value = last == null || last.index >= info.totalItemsCount - 1
+        }
+    }
+
+    // Autoscroll al último item cuando llega contenido nuevo, streaming de texto,
+    // o una tool call se agrega/actualiza (antes solo miraba state.messages, así
+    // que una tool call sin mensaje nuevo no hacía scrollear nada).
+    LaunchedEffect(totalItems, state.messages.lastOrNull()?.text?.length, state.toolCalls.lastOrNull()) {
+        if (totalItems > 0 && stickToBottom.value) {
+            listState.animateScrollToItem(totalItems - 1)
+        }
     }
 
     Column(modifier.fillMaxWidth()) {
