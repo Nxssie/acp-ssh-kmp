@@ -133,6 +133,10 @@ class TerminalEmulator(initialCols: Int = 80, initialRows: Int = 24) {
 
     private fun writeChar(ch: Char) {
         if (wrapPending) {
+            // Sin esto, wrapPending queda en true y CADA carácter siguiente
+            // vuelve a disparar un salto de línea de más — el texto se
+            // desparrama filas abajo en vez de escribirse en la fila que sigue.
+            wrapPending = false
             cursorCol = 0
             linefeed()
         }
