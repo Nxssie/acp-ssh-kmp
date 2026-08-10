@@ -34,6 +34,45 @@ class AcpSessionStoreTest {
     }
 
     @Test
+    fun chunksWithoutMessageIdStillAppend() {
+        // El agente real (claude-code-acp) no manda messageId en sus chunks.
+        val store = AcpSessionStore()
+        store.onUpdate(chunk("P", null))
+        store.onUpdate(chunk("ONG", null))
+        val messages = store.state.value.messages
+        assertEquals(1, messages.size)
+        assertEquals("PONG", messages[0].text)
+    }
+
+    @Test
+    fun turnEndThenNewChunkWithoutMessageIdStartsFreshBubble() {
+        val store = AcpSessionStore()
+        store.onUpdate(chunk("primera", null))
+        store.onTurnEnd()
+        store.onUpdate(chunk("segunda", null))
+        val messages = store.state.value.messages
+        assertEquals(2, messages.size)
+        assertEquals("primera", messages[0].text)
+        assertEquals("segunda", messages[1].text)
+    }
+
+    @Test
+    fun userMessageChunkFromReplayShowsAsUserBubble() {
+        // session/load repone el historial con user_message_chunk (el agente
+        // real nunca lo manda en un turno en vivo, verificado): antes se
+        // ignoraba siempre, así que el mensaje original del usuario no
+        // aparecía al retomar una sesión.
+        val store = AcpSessionStore()
+        store.onUpdate(
+            SessionUpdate.UserMessageChunk(ContentChunk(content = ContentBlock.Text("hola desde antes"), messageId = null)),
+        )
+        val messages = store.state.value.messages
+        assertEquals(1, messages.size)
+        assertEquals(ChatRole.USER, messages[0].role)
+        assertEquals("hola desde antes", messages[0].text)
+    }
+
+    @Test
     fun thoughtsAreSeparateRole() {
         val store = AcpSessionStore()
         store.onUpdate(
@@ -144,7 +183,7 @@ class AcpSessionStoreTest {
         assertTrue(store.state.value.messages.isEmpty())
     }
 
-    private fun chunk(text: String, messageId: String): SessionUpdate =
+    private fun chunk(text: String, messageId: String?): SessionUpdate =
         SessionUpdate.AgentMessageChunk(
             ContentChunk(content = ContentBlock.Text(text), messageId = messageId),
         )

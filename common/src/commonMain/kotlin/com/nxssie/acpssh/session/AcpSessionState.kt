@@ -79,9 +79,13 @@ class AcpSessionStore {
             when (update) {
                 is SessionUpdate.AgentMessageChunk -> appendChunk(state, ChatRole.AGENT, update.chunk.messageId, update.chunk.content)
                 is SessionUpdate.AgentThoughtChunk -> appendChunk(state, ChatRole.THOUGHT, update.chunk.messageId, update.chunk.content)
-                // El eco del usuario lo añade localmente onUserPrompt; ignorar
-                // el del agente evita burbujas duplicadas.
-                is SessionUpdate.UserMessageChunk -> state
+                // El agente real (claude-code-acp) NUNCA manda esto en un turno en
+                // vivo (verificado): solo aparece al reponer historial vía
+                // `session/load`, donde es la única forma de ver qué dijo el
+                // usuario en la sesión original. Si algún agente sí lo mandara en
+                // vivo, se duplicaría con el eco local de onUserPrompt — riesgo
+                // aceptado, no observado contra el agente real.
+                is SessionUpdate.UserMessageChunk -> appendChunk(state, ChatRole.USER, update.chunk.messageId, update.chunk.content)
                 is SessionUpdate.ToolCall -> state.copy(
                     toolCalls = state.toolCalls + update.toolCall.toUi(),
                 )
@@ -151,10 +155,18 @@ class AcpSessionStore {
     ): AcpSessionState {
         val text = (content as? ContentBlock.Text)?.text ?: return state
         if (text.isEmpty()) return state
-        val id = messageId ?: "auto-${role.name.lowercase()}-${state.messages.size}"
+        // El agente real (claude-code-acp) no manda messageId en absoluto en sus
+        // chunks — el id de respaldo debe ser ESTABLE entre chunks de la misma
+        // racha (nunca derivado de state.messages.size, que cambia con cada
+        // burbuja nueva y por eso partía cada respuesta en una burbuja por chunk).
+        val id = messageId ?: "auto-${role.name.lowercase()}"
         val messages = state.messages.toMutableList()
         val last = messages.lastOrNull()
-        if (last != null && last.role == role && last.id == id) {
+        // `streaming` distingue "seguir esta racha" de "esta racha ya cerró"
+        // (onTurnEnd la apaga): sin este chequeo, el id fijo de respaldo pegaría
+        // el primer chunk del turno siguiente a la burbuja ya finalizada del
+        // turno anterior en vez de abrir una nueva.
+        if (last != null && last.role == role && last.id == id && last.streaming) {
             messages[messages.size - 1] = last.copy(text = last.text + text, streaming = true)
         } else {
             messages.add(ChatBubble(id = id, role = role, text = text, streaming = true))
