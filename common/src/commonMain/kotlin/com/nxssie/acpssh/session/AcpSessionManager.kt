@@ -7,6 +7,7 @@ import com.nxssie.acpssh.acp.PermissionRequest
 import com.nxssie.acpssh.acp.RemoteAcpProcess
 import com.nxssie.acpssh.acp.readAllToString
 import com.nxssie.acpssh.profile.SavedTabSession
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -95,15 +96,37 @@ class AcpSessionManager(
 
     // --- conexión --------------------------------------------------------------
 
+    /**
+     * Incrementado por cada [connect]/[disconnect]: si un `connect()` viejo
+     * (p. ej. el auto-reconnect al abrir la app) sigue haciendo el handshake
+     * SSH cuando el usuario ya tocó "Salir", `connectJob?.cancel()` no basta
+     * — `connectSsh` es una llamada bloqueante de SSHJ, no necesariamente
+     * cancelable al instante — así que sin este chequeo el `connect()` viejo
+     * termina de todas formas y pisa el DISCONNECTED con un CONNECTED tardío
+     * (exactamente el "toco Salir y vuelve al chat solo" reportado).
+     */
+    @Volatile private var epoch = 0
+
     fun connect(config: TerminalConfig) {
+        val myEpoch = ++epoch
         connectJob?.cancel()
         _connection.value = ConnectionState(ConnectStatus.CONNECTING)
         connectJob = scope.launch {
             disconnectInternal()
+            if (myEpoch != epoch) return@launch
             connectedConfig = config
             try {
                 val t = connectSsh(config) { pending ->
-                    _connection.value = ConnectionState(ConnectStatus.AWAITING_HOST_KEY, pendingHostKey = pending)
+                    if (myEpoch == epoch) {
+                        _connection.value = ConnectionState(ConnectStatus.AWAITING_HOST_KEY, pendingHostKey = pending)
+                    }
+                }
+                if (myEpoch != epoch) {
+                    // Se desconectó (o se lanzó otro connect) mientras el SSH seguía
+                    // en curso: cerrar el transporte recién creado en vez de dejarlo
+                    // huérfano, y no tocar el estado — ya no es el actual.
+                    runCatching { t.close() }
+                    return@launch
                 }
                 mutex.withLock { transport = t }
                 _connection.value = ConnectionState(ConnectStatus.CONNECTED)
@@ -141,20 +164,26 @@ class AcpSessionManager(
                 mutex.withLock {
                     tabsToOpen.forEach { id -> sessionRecords[id]?.let { resumeInfo[id] = it.sessionId to it.cwd } }
                 }
-                tabsToOpen.forEach { openTabInternal(it) }
+                for (id in tabsToOpen) {
+                    if (myEpoch != epoch) return@launch
+                    openTabInternal(id)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                mutex.withLock {
-                    runCatching { transport?.close() }
-                    transport = null
+                if (myEpoch == epoch) {
+                    mutex.withLock {
+                        runCatching { transport?.close() }
+                        transport = null
+                    }
+                    _connection.value = ConnectionState(ConnectStatus.FAILED, error = e.message ?: e.toString())
                 }
-                _connection.value = ConnectionState(ConnectStatus.FAILED, error = e.message ?: e.toString())
             }
         }
     }
 
     fun disconnect() {
+        epoch++
         connectJob?.cancel()
         connectJob = null
         _connection.value = ConnectionState(ConnectStatus.DISCONNECTED)
