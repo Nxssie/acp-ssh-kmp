@@ -403,3 +403,176 @@ compiló ni se corrió `--test-acp-persist` contra el sshd real**: este sandbox 
 absoluto (ni siquiera el `kotlinc` suelto que permitió verificar la Fase A fuera de gradle). Falta
 como siguiente paso, en la máquina con SDK: `./gradlew :common:desktopTest` y
 `scripts/validate-acp-persist.sh` contra el sshd de prueba (`scripts/setup-sshd.sh`).
+
+## Fase C — Modelo de dominio ACP (cliente): COMPLETADA (2026-08-10)
+
+**Contenido:** la capa de protocolo completa, validada contra el spec v1 del
+repositorio `agentclientprotocol/agent-client-protocol` (fuente Rust autoritativa)
+Y contra el adaptador real **`@agentclientprotocol/claude-agent-acp` 0.66.0**
+corrido en este entorno (responde `initialize`/`session/new` sin API key), no solo
+contra fixtures sintéticos:
+
+- **Validación empírica previa a escribir tipos:** el adaptador real se ejecutó a
+  mano (probe Node sobre stdio) y se capturaron los mensajes crudos — `initialize`
+  response, `session/new` response, `session/update` con `available_commands_update`,
+  error de `session/prompt` con sesión inexistente, y la llegada **desordenada** de
+  respuestas (el adaptador respondió el `session/prompt` antes que el `session/new`).
+  El esquema v1 (tags `sessionUpdate` en snake_case, `ContentBlock`, `ToolCall`,
+  `ToolCallUpdate` con campos aplanados, `Plan`, `PermissionOption`/`outcome`) se
+  contrastó contra el código fuente Rust del spec (descargado de GitHub).
+- `commonMain` `acp/AcpProtocol.kt`: instancia `Json` compartida (ignoreUnknownKeys +
+  coerceInputValues + explicitNulls=false + **encodeDefaults=true** — sin esto los
+  params se serializaban como `{}`), `parseRpc` (detección de tipo por la forma:
+  notificación sin id / request entrante con método+id / respuesta con id), `RpcOut`
+  (builders de request/notification/response/error), `AcpPrettyJson`.
+- `commonMain` `acp/AcpTypes.kt`: DTOs de salida (`InitializeParams` con
+  `clientInfo:{name,version}`, `NewSessionParams`, `PromptParams`, `SessionIdParams`,
+  `PermissionOutcome.Selected/Cancelled`) y decodificadores lenient de entrada
+  (`SessionUpdate` sellado decodificado a mano con tag desconocido → `Unknown(raw)`,
+  `ContentChunk`, `AcpToolCall`, `AcpToolCallUpdate`, `ToolCallContent` con `Diff`,
+  `AcpPlan`/`PlanEntry`, `PermissionRequest`).
+- `commonMain` `acp/AcpClient.kt`: hilo de lectura único (resuelve `CompletableDeferred`
+  por id — tolera respuestas desordenadas, confirmado contra el adaptador real),
+  notificaciones → `Channel<SessionUpdate>`, requests entrantes →
+  `Channel<PermissionRequest>` (el host responde), métodos desconocidos → error
+  JSON-RPC -32601 (evita que el agente se cuelgue esperando respuesta), `initialize`/
+  `newSession`/`prompt` (el error de prompt se devuelve en el resultado, no lanza),
+  `cancel` (notificación), `onEof` para desconexión limpia.
+- `commonMain` `acp/AcpExecTransport.kt`: interfaz `exec`-only por plataforma +
+  `readAllToString` (lectura hasta EOF para comandos cortos).
+- `commonMain` `session/AcpSession.kt`: orquestación compartida — arranque del agente
+  remoto (Fase B, idempotente), `pwd` remoto como cwd por defecto, reader/writer
+  `exec` → `DuplexRawByteChannel` → `NdjsonFramer` → `AcpClient`, `initialize` +
+  `session/new`.
+- `commonMain` `session/AcpSessionState.kt`: reducer puro (`AcpSessionStore`) de la
+  sesión de chat — burbujas (agente/pensamiento/usuario, agrupadas por messageId),
+  tool calls (merge por id con diffs/input/output), plan (reemplazo completo), permiso
+  pendiente, busy, error. Sin dependencias de UI ni transporte.
+- `commonTest` (nuevas): `AcpProtocolTest` (detección + builders), `AcpClientTest`
+  (handshake completo, prompt con updates intercaladas y respuestas desordenadas,
+  permiso entrante + respuesta, error de prompt, método desconocido, cancel — con
+  canal fake por cola que el test rellena en el momento del "agente"), `SessionUpdateTest`
+  (shapes reales capturados + sintéticos, tags snake_case, unknown preservado),
+  `AcpSessionStoreTest` (reducer). `MarkdownTest` y `UnifiedDiffTest` en la Fase E.
+
+**Verificación:** compilado completo fuera de gradle (JDK 21 + kotlinc 2.4.10 +
+plugins serialization/compose, jars de kotlinx/sshj/compose descargados de Maven
+Central) y **76/76 tests en verde**. El request de `initialize` generado por el
+cliente se verificó contra el adaptador real (responde protocolVersion 1 + agentInfo).
+
+## Fase D — Host ACP + selector de modo + ChatScreen: COMPLETADA (2026-08-10)
+
+**Contenido:**
+
+- `commonMain` `session/AcpHost.kt`: interfaz hermana de `TerminalHost` (mismos
+  estados de conexión + TOFU, `sendPrompt`, `respondPermission`, `cancelTurn`,
+  `toggleToolCall`); `HasConnection` común a ambos hosts; `AcpMode` (TERMINAL/CHAT).
+- `commonMain` `session/TerminalHost.kt`: `TerminalConfig` gana `acpRunDir` (relativo
+  al home remoto; default `.acp-ssh-kmp`) y `acpCwd` (default: `pwd` remoto); el
+  `remoteCommand` pasa a ser el comando de arranque del agente en modo chat.
+- `android` `AndroidSsh.kt`: conexión SSH + TOFU + keyProvider extraídos de
+  `AndroidSshTerminalHost` (el plan marcaba esa duplicación como riesgo de Fase C/D);
+  `AndroidSshTerminalHost` lo usa ahora. `AndroidAcpHost`: connect → `AcpSession`
+  → clientes updates/permisos → `AcpSessionStore`; `onEof` → desconexión limpia
+  (el proceso remoto sobrevive). `MainActivity` construye ambos hosts.
+- `desktopMain` `DesktopAcpHost.kt`: mismo patrón sobre `SshjConnect` + `exec`
+  kotlinx.io; cancela el **job** de conexión (no el scope) para permitir reconexiones.
+  `Main.kt` (desktop) construye ambos hosts.
+- `commonMain` `App.kt`: `App(terminalHost, acpHost)` con selector de modo en
+  `ConnectionScreen` (FilterChips Terminal/Chat; label del comando según modo);
+  `HostKeyDialog` despacha al host activo. `ChatScreen.kt`: burbujas usuario/agente/
+  pensamiento, autoscroll, plan, tarjetas de tool call expandibles (input/output/diff),
+  modal de permiso (opciones del agente + cancelar → outcome cancelled), input +
+  enviar + cancelar turno (■), indicador de streaming.
+
+**Verificación:** compilado completo de common/desktop/android + UI con el plugin de
+Compose. Bugs reales detectados y corregidos durante la verificación fuera de gradle
+(con `-jvm-target 17` y detección de errores fiable): `onChannelEof` llamaba a una
+función `suspend` desde contexto no-suspend en ambos hosts; `App.kt` usaba
+`loadLastConfig()` sobre `HasConnection`, que no lo exponía (ahora sí); carrera de
+ids en `AcpClient.request()` (se captura el id dentro del lock); declaración
+duplicada de `InlineText` en ChatScreen. Falta (máquina con SDK): `:android:assembleDebug`
+y el smoke manual.
+
+## Fase E — Diffs, plan, markdown: COMPLETADA (2026-08-10)
+
+**Contenido:**
+
+- `commonMain` `markdown/Markdown.kt`: parser markdown mínimo y determinista —
+  párrafos, encabezados #–######, listas ordenadas/desordenadas, citas, bloques de
+  código con fence (con language), separador; en línea `code`, **negrita**, *cursiva*
+  y [enlaces](url) anidados. Render en `ChatScreen` con `AnnotatedString` por estilos.
+- `commonMain` `diff/UnifiedDiff.kt`: diff unificado estilo `diff -u` con **Myers
+  (O(ND) en espacio lineal, divide-and-conquer)** sobre líneas, tope de profundidad
+  (degradación a todo-borrado/todo-añadido en archivos enormes), hunks con contexto
+  y cabeceras `@@ -a,b +c,d @@`; los borrados van antes que los añadidos. Render
+  coloreado en `ChatScreen` (verde/rojo/azul/gris sobre fondo oscuro).
+- `commonTest`: `MarkdownTest` (9) y `UnifiedDiffTest` (9: identical, new/deleted
+  file, sustitución, cabeceras, dos hunks separados, insert grande, render, myers).
+
+**Verificación:** 76/76 tests (los de E incluidos). Bugs reales encontrados y
+corregidos durante la verificación fuera de gradle: `encodeDefaults=false` omitía
+los campos por defecto de los requests (serializaba `{}`); el render del diff no
+añadía los prefijos `+`/`-`; `groupValues[2]` en el regex de listas ordenadas; el
+test del cliente tenía una race con el canal fake (sin `\n` el framer emitía solo en
+EOF y mataba el reader).
+
+## Verificación real con SDK y bugs encontrados/corregidos (2026-08-10)
+
+Se encontró un JDK 21 (`/tmp/toolchain/jdk21`) en el sandbox y se pudo correr por fin
+`:common:desktopTest` y ambos scripts de validación (`validate-acp-persist.sh`,
+`validate-acp-client.sh`) contra el sshd de prueba real — lo que las Fases B/C/D
+daban por "completado" nunca se había ejecutado de punta a punta. Al correrlos
+aparecieron **tres bugs reales**, no solo falta de entorno:
+
+1. **`AcpSession.close()` colgaba ~30s en cada desconexión** (mismo código que usan
+   `AndroidAcpHost.disconnect()`/`DesktopAcpHost.disconnect()` en producción).
+   Causa: `SshjExecChannel.close()`/`SshjExecRawChannel.close()` llaman al `close()`
+   normal de SSHJ, que bloquea esperando el ACK de cierre del canal remoto — y el
+   `cat $STDOUT_FIFO` que respalda el canal lector nunca sale por sí solo (por
+   diseño, para sobrevivir a la reconexión), así que ese ACK nunca llega y SSHJ
+   revienta con su timeout por defecto (30s). **Fix:** `closeChannelWithTimeout()`
+   en ambos archivos — el cierre real corre en un hilo daemon con `join(2_000)`;
+   si no termina a tiempo se abandona (se libera solo cuando el transporte SSH
+   termine de desconectarse) y el llamador no se bloquea.
+2. **Carrera de lector huérfano en el FIFO al reconectar.** Al arreglar (1) se
+   reveló un problema más de fondo: sin pty, cerrar el canal `exec` del lector no
+   le llega como señal al `cat` remoto — el proceso viejo se queda bloqueado
+   leyendo el mismo FIFO que el nuevo lector del reconnect, y el kernel entrega
+   cada escritura a uno solo de los lectores bloqueados (no a todos), pudiendo
+   perder el mensaje si se lo entrega al huérfano. Confirmado con `jstack`: el
+   segundo round-trip de `validate-acp-persist.sh` se quedaba esperando datos que
+   nunca llegaban. **Fix:** `readerCommand`/`writerCommand` en `RemoteAcpProcess.kt`
+   ahora matan por PID (archivo `acp-reader.pid`/`acp-writer.pid`) al lector/escritor
+   anterior antes de registrarse ellos mismos, así solo hay un lector vivo por FIFO.
+3. **Las lecturas del canal `exec` no eran cancelables.** Al investigar (2) con
+   `jstack` se encontró que un `withTimeout(5_000)` alrededor de una lectura NDJSON
+   se quedó bloqueado más de una hora sin dispararse: `readChunk()` en
+   `RawByteChannels.kt` (desktop) y `SshjExecRawChannel.kt` (Android) llamaban a la
+   lectura bloqueante de SSHJ sin `runInterruptible`, así que la cancelación de la
+   coroutine nunca interrumpía el hilo bloqueado. Se confirmó en el código fuente de
+   SSHJ que `ChannelInputStream.read()` sí convierte `InterruptedException` en
+   `InterruptedIOException` correctamente, así que el fix era aplicable: las tres
+   operaciones (`readChunk`/`write`/`flush`) ahora corren dentro de
+   `runInterruptible(Dispatchers.IO) { ... }` en ambas plataformas.
+4. Bug menor adicional (sin impacto en producción): el agente NDJSON fake de
+   `validate-acp-client.sh` (`FAKE_ACP_AGENT` en `Main.kt`) tenía llaves mal
+   contadas a mano en dos líneas (`plan` con una `}` de menos, `request_permission`
+   con una de más) — corrompía el NDJSON y colgaba el test hasta su timeout de 15s.
+
+**Verificación tras los fixes:** `:common:desktopTest` 100/101 (el único que falla,
+`TerminalEmulatorTest.wrapsAtLastColumn`, es preexistente y ajeno a ACP — no toca
+archivos de este diff). `validate-acp-persist.sh` → `PASS` (round-trip 1, cierre y
+reapertura de canales, round-trip 2 tras "reconexión", ~20s). `validate-acp-client.sh`
+→ `PASS` (`initialize`, `session/new`, `prompt` con streaming de texto + tool call +
+diff + plan, `request_permission` con 2 opciones, `stopReason=end_turn`).
+
+## Verificación aún pendiente (Android SDK / agente real)
+
+1. `:android:assembleDebug` + smoke manual (selector Terminal/Chat, permisos, diffs)
+   — este sandbox no tiene Android SDK instalado (`local.properties` apunta a un
+   `sdk.dir` que no existe aquí); los fixes de esta sección se revisaron a mano por
+   ser el mismo patrón ya verificado en desktop, pero no se compilaron con AGP.
+2. Contra el agente real: instalar `claude-code-acp` en el servidor y apuntar el
+   `remoteCommand` del modo chat a su ruta; verificar streaming, tool calls, diffs,
+   `request_permission` con claude en modo manual.
