@@ -262,9 +262,16 @@ class AcpSessionManager(
     fun sendPrompt(text: String) {
         scope.launch {
             val entry = mutex.withLock { entries[_activeTabId.value] } ?: return@launch
-            val client = entry.client ?: return@launch
+            val client = entry.client
             val state = entry.store.state.value
-            val sessionId = state.sessionId ?: return@launch
+            val sessionId = state.sessionId
+            if (client == null || sessionId == null) {
+                // La sesión sigue arrancando (o falló al arrancar): sin esto el
+                // prompt se pierde en silencio y el usuario no sabe por qué no
+                // hubo respuesta.
+                entry.store.onError("El agente todavía no está listo para recibir mensajes.")
+                return@launch
+            }
             if (state.busy || text.isBlank()) return@launch
             entry.store.onUserPrompt(text)
             val result = client.prompt(sessionId, text)
