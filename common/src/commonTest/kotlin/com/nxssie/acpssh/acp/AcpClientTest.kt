@@ -5,6 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -13,6 +14,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import java.io.InterruptedIOException
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
@@ -260,6 +262,39 @@ class AcpClientTest {
             withTimeout(5_000) { client.cancel("sess-1") }
             assertTrue(channel.written.contains("\"method\":\"session/cancel\""))
             assertTrue(!channel.written.contains("\"id\":"))
+        } finally {
+            client.close()
+            scope.cancel()
+        }
+    }
+
+    /**
+     * Reproduce el crash reportado al cerrar un tab / matar el agente: SSHJ
+     * traduce la interrupción del hilo de lectura en `InterruptedIOException`
+     * (no `InterruptedException`), así que `runInterruptible` no la convierte
+     * en `CancellationException` y llega al reader loop como una excepción
+     * real. Sin el `catch` en [AcpClient.start], esto escapaba al scope raíz
+     * (sin `CoroutineExceptionHandler`) y tumbaba toda la app.
+     */
+    @Test
+    fun readFailureIsTreatedAsEofInsteadOfCrashingTheScope() = runBlocking {
+        val uncaught = mutableListOf<Throwable>()
+        val handler = CoroutineExceptionHandler { _, e -> uncaught.add(e) }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + handler)
+        val failingChannel = object : RawByteChannel {
+            override suspend fun readChunk(buffer: ByteArray): Int = throw InterruptedIOException("interrupted read")
+            override suspend fun write(bytes: ByteArray) {}
+            override suspend fun flush() {}
+            override fun close() {}
+        }
+        val client = AcpClient(NdjsonFramer(failingChannel), scope)
+        val eofCalled = CompletableDeferred<Unit>()
+        client.onEof = { eofCalled.complete(Unit) }
+        client.start()
+        try {
+            withTimeout(5_000) { eofCalled.await() }
+            kotlinx.coroutines.delay(50) // margen para que un escape tardío llegue al handler
+            assertTrue(uncaught.isEmpty(), "no debería escapar ninguna excepción al scope: $uncaught")
         } finally {
             client.close()
             scope.cancel()

@@ -1,5 +1,6 @@
 package com.nxssie.acpssh.acp
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -59,6 +60,16 @@ class AcpClient(
         readerJob = scope.launch {
             try {
                 framer.lines().collect { line -> route(parseRpc(line)) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Cerrar un tab o matar el agente interrumpe una lectura
+                // bloqueante en curso (SSHJ) que puede salir como
+                // InterruptedIOException en vez de CancellationException
+                // (runInterruptible solo traduce InterruptedException) — sin
+                // este catch, esta corrutina vive en el scope raíz (sin
+                // CoroutineExceptionHandler) y la excepción tumba toda la app.
+                // Tratarla igual que un EOF real: el host decide qué hacer vía onEof.
             } finally {
                 // El EOF del canal remoto llega por aquí; la cancelación del
                 // scope del host también pasa por este finally.
