@@ -24,6 +24,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Run common tests
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -XX:MaxDirectMemorySize=512m"
+        run: ./gradlew :common:desktopTest --no-daemon
+
       - name: Build debug APK
         env:
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -XX:MaxDirectMemorySize=512m"
