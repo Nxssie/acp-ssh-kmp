@@ -352,3 +352,54 @@ selector de modo, `AcpHost` ni tipos ACP (Fases B–E siguen bloqueadas por el b
 coroutines 1.11.0, kotlinx-io 0.9.1, sshj 0.40.0 — 12/12 tests OK; el adaptador Android y el
 bridge desktop compilan contra las mismas versiones. Falta correr `:common:desktopTest` +
 `:android:assembleDebug` en la máquina con SDK (ver Fase A del plan de ejecución).
+
+## Fase B — Arranque persistente remoto: COMPLETADA (2026-08-10)
+
+**Contenido:** el snippet de FIFOs+`setsid` que proponía el plan original (§4) tenía un bug de
+diseño que se detectó y arregló **antes** de escribir Kotlin, reproduciéndolo a mano en shell
+(sin SSH de por medio, solo para aislar la mecánica de FIFOs):
+
+- **Bug encontrado:** abrir un FIFO en modo lectura o escritura bloquea el `open()` hasta que
+  aparece el extremo contrario; y si el único lector/escritor externo se desconecta, el otro lado
+  recibe EOF (lecturas) o EPIPE/SIGPIPE (escrituras) — el snippet original mataba al agente en el
+  primer reconnect, justo lo opuesto al objetivo de "sobrevive a reconexión".
+- **Fix validado:** mantener un fd propio `<>` (lectura+escritura) sobre cada FIFO durante toda la
+  vida del agente, heredado a través del `exec` final hacia el binario (no se cierra salvo que el
+  agente cierre explícitamente todos los fds heredados, poco común en una CLI en foreground). Con
+  eso el conteo de lectores/escritores del FIFO nunca llega a cero: un cliente que se desconecta
+  solo causa bloqueo (backpressure), nunca pérdida de datos ni muerte del proceso. Confirmado en
+  shell puro: desconexión sin pérdida de mensajes, 3000 líneas encoladas sin lector (backpressure,
+  sin crash), relanzamiento idempotente (`ALREADY_RUNNING` si el pid vive) y recuperación tras
+  matar el proceso (pidfile stale detectado, FIFOs recreados, nuevo pid).
+- `stderr` va a un archivo normal (`acp-err.log`), no a un tercer FIFO: un FIFO de error sin
+  lector bloquearía el `open()` de redirección antes de poder ejecutar el agente — desviación
+  deliberada del snippet original del plan.
+
+**Código:**
+- `commonMain` `acp/RemoteAcpProcess.kt`: `launchScript(runDir, agentCommand)` (idempotente vía
+  pidfile + `kill -0`), `readerCommand`/`writerCommand` (`cat acp-out` / `cat >> acp-in`),
+  `shellQuote` (POSIX, comillas simples). Los valores dinámicos (`runDir`, `agentCommand`) solo se
+  interpolan en la asignación de variables shell de cabecera; el bloque `setsid sh -c '...'` es
+  texto estático, así que ninguna comilla que meta el usuario puede rompernos ese bloque
+  (verificado en `commonTest`).
+- `commonMain` `acp/DuplexRawByteChannel.kt`: combina un `RawByteChannel` de solo lectura y otro de
+  solo escritura (dos `exec` SSH independientes) en un `RawByteChannel` bidireccional para el
+  `NdjsonFramer` de la Fase A.
+- `commonTest`: `RemoteAcpProcessTest.kt` (quoting, estructura del script, aislamiento del bloque
+  interno) + `DuplexRawByteChannelTest.kt` (routing read/write/flush/close). Vía `:common:desktopTest`.
+- `desktop` `Main.kt --test-acp-persist`: reproduce el escenario completo contra el sshd de
+  prueba — arranca el agente (un bucle de shell que hace eco, ya que `claude-code-acp` no está
+  instalado en el sshd de prueba), round-trip NDJSON, cierra ambos canales `exec` (desconexión),
+  reabre canales frescos y confirma el segundo round-trip sin pérdida. `scripts/validate-acp-persist.sh`
+  es el wrapper, igual que `validate-ssh.sh` de la Fase 1.
+- Sin cambios en `AndroidSshTerminalHost`/`DesktopSshTerminalHost`: `openExec`/`session.exec()` de
+  la Fase A ya bastan para abrir los canales reader/writer, no hace falta plomería nueva por host.
+
+**Verificación:** la mecánica de FIFOs+`setsid` se ejecutó y confirmó en shell real (ver arriba).
+El código Kotlin (`RemoteAcpProcess`, `DuplexRawByteChannel`, `Main.kt`) se revisó a mano con
+mucho cuidado (incluyendo los casos de escape de `$` en plantillas de string de Kotlin, que
+causaron dos bugs de compilación reales detectados y corregidos antes de continuar) pero **no se
+compiló ni se corrió `--test-acp-persist` contra el sshd real**: este sandbox no tiene JDK/SDK en
+absoluto (ni siquiera el `kotlinc` suelto que permitió verificar la Fase A fuera de gradle). Falta
+como siguiente paso, en la máquina con SDK: `./gradlew :common:desktopTest` y
+`scripts/validate-acp-persist.sh` contra el sshd de prueba (`scripts/setup-sshd.sh`).
