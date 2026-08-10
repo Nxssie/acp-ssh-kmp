@@ -1,5 +1,6 @@
 package com.nxssie.acpssh.profile
 
+import com.nxssie.acpssh.session.AcpMode
 import com.nxssie.acpssh.session.TerminalConfig
 
 /**
@@ -26,6 +27,15 @@ interface ProfileStore {
     /** Último perfil usado (para preseleccionarlo en la lista al entrar). */
     fun loadLastProfileId(): String?
     fun setLastProfileId(id: String?)
+
+    /**
+     * Último modo usado (Terminal/Chat). El botón "atrás" de Android termina
+     * la Activity de verdad — sin bundle de `rememberSaveable` que restaurar —
+     * así que sin esto el auto-reconnect siempre vuelve a Terminal aunque el
+     * usuario estuviera chateando.
+     */
+    fun loadLastMode(): AcpMode?
+    fun setLastMode(mode: AcpMode)
 
     /** Tabs de chat ACP con sesión viva del perfil, para retomarlos (`session/load`) tras reconectar. */
     fun loadSavedTabs(profileId: String): List<SavedTabSession>

@@ -5,6 +5,7 @@ import com.nxssie.acpssh.profile.ProfileStore
 import com.nxssie.acpssh.profile.SavedCommand
 import com.nxssie.acpssh.profile.SavedKey
 import com.nxssie.acpssh.profile.SavedTabSession
+import com.nxssie.acpssh.session.AcpMode
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -67,6 +68,12 @@ class DesktopProfileStore(
         mutate { it.copy(lastProfileId = id) }
     }
 
+    override fun loadLastMode(): AcpMode? = load().lastMode?.let { runCatching { AcpMode.valueOf(it) }.getOrNull() }
+
+    override fun setLastMode(mode: AcpMode) {
+        mutate { it.copy(lastMode = mode.name) }
+    }
+
     override fun loadSavedTabs(profileId: String): List<SavedTabSession> = load().tabsByProfile[profileId].orEmpty()
 
     override fun saveTabs(profileId: String, tabs: List<SavedTabSession>) {
@@ -121,5 +128,6 @@ class DesktopProfileStore(
         val commands: List<SavedCommand> = emptyList(),
         val lastProfileId: String? = null,
         val tabsByProfile: Map<String, List<SavedTabSession>> = emptyMap(),
+        val lastMode: String? = null,
     )
 }

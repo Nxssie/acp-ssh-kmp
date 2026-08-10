@@ -4,6 +4,7 @@ import com.nxssie.acpssh.profile.ConnectionProfile
 import com.nxssie.acpssh.profile.SavedCommand
 import com.nxssie.acpssh.profile.SavedKey
 import com.nxssie.acpssh.profile.SavedTabSession
+import com.nxssie.acpssh.session.AcpMode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -109,5 +110,13 @@ class DesktopProfileStoreTest {
         store.saveTabs("p1", listOf(SavedTabSession("tab-1", "sess-a", "/home/agent")))
         store.saveTabs("p1", emptyList())
         assertTrue(store.loadSavedTabs("p1").isEmpty())
+    }
+
+    @Test
+    fun lastModePersistsAcrossInstances() {
+        val (store, file) = tempStore()
+        assertNull(store.loadLastMode())
+        store.setLastMode(AcpMode.CHAT)
+        assertEquals(AcpMode.CHAT, DesktopProfileStore(file).loadLastMode())
     }
 }

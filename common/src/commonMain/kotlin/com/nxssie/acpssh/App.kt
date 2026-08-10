@@ -60,7 +60,15 @@ fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore) {
                 .windowInsetsPadding(WindowInsets.safeDrawing),
             color = MaterialTheme.colorScheme.background,
         ) {
-            var mode by rememberSaveable { mutableStateOf(AcpMode.TERMINAL) }
+            // El botón "atrás" de Android termina la Activity de verdad, sin
+            // bundle de rememberSaveable que restaurar — por eso el valor
+            // inicial (solo se usa si NO hay bundle) viene del último modo
+            // persistido, no de un default fijo a Terminal.
+            var mode by rememberSaveable { mutableStateOf(store.loadLastMode() ?: AcpMode.TERMINAL) }
+            fun setMode(m: AcpMode) {
+                mode = m
+                store.setLastMode(m)
+            }
             var screen by remember {
                 mutableStateOf<ConnectionUi>(
                     if (store.listProfiles().isEmpty()) ConnectionUi.Form(null) else ConnectionUi.Profiles,
@@ -107,7 +115,7 @@ fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore) {
                     ConnectionUi.Profiles -> ProfilesScreen(
                         store = store,
                         mode = mode,
-                        onModeChange = { mode = it },
+                        onModeChange = ::setMode,
                         error = connection.error,
                         onConnect = { profile -> connect(profile) },
                         onNew = { screen = ConnectionUi.Form(null) },
@@ -116,7 +124,7 @@ fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore) {
                     is ConnectionUi.Form -> ConnectionScreen(
                         editing = s.editing,
                         mode = mode,
-                        onModeChange = { mode = it },
+                        onModeChange = ::setMode,
                         store = store,
                         onConnect = { profile ->
                             screen = ConnectionUi.Profiles

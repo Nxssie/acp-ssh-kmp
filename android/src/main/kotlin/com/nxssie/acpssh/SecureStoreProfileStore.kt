@@ -7,6 +7,7 @@ import com.nxssie.acpssh.profile.SavedCommand
 import com.nxssie.acpssh.profile.SavedKey
 import com.nxssie.acpssh.profile.SavedTabSession
 import com.nxssie.acpssh.profile.newProfileId
+import com.nxssie.acpssh.session.AcpMode
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -66,6 +67,13 @@ class SecureStoreProfileStore(context: Context) : ProfileStore {
 
     override fun setLastProfileId(id: String?) {
         prefs.edit().putString(KEY_LAST_PROFILE, id).apply()
+    }
+
+    override fun loadLastMode(): AcpMode? =
+        prefs.getString(KEY_LAST_MODE, null)?.let { runCatching { AcpMode.valueOf(it) }.getOrNull() }
+
+    override fun setLastMode(mode: AcpMode) {
+        prefs.edit().putString(KEY_LAST_MODE, mode.name).apply()
     }
 
     override fun loadSavedTabs(profileId: String): List<SavedTabSession> =
@@ -142,6 +150,7 @@ class SecureStoreProfileStore(context: Context) : ProfileStore {
         const val KEY_KEYS = "keys"
         const val KEY_COMMANDS = "commands"
         const val KEY_LAST_PROFILE = "last_profile"
+        const val KEY_LAST_MODE = "last_mode"
 
         const val LEGACY_HOST = "host"
         const val LEGACY_PORT = "port"
