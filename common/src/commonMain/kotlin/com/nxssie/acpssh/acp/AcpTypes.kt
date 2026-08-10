@@ -1,6 +1,7 @@
 package com.nxssie.acpssh.acp
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
@@ -39,7 +40,8 @@ data class InitializeParams(
 @Serializable
 data class NewSessionParams(
     val cwd: String,
-    val mcpServers: JsonObject = buildJsonObject { },
+    /** El spec (y el adaptador real) esperan un array, no un objeto de mapa. */
+    val mcpServers: JsonArray = buildJsonArray { },
 )
 
 @Serializable
