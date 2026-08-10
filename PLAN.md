@@ -687,10 +687,15 @@ generar/importar/exportar/renombrar/borrar sobre la lista (reutiliza
 seleccionada, para el caso de que el usuario necesite copiarla — fricción
 deliberada, no lo oculta del todo. **Comando**: mismo patrón de dropdown sobre
 `SavedCommand` (filtrado por `mode` actual, con opción "ver todos"), opción
-"Nuevo comando" que abre un campo de texto + label para guardarlo, y opción
-"Sin comando guardado (usar shell / claude-code-acp por defecto)" en vez de un
-default siempre precargado — cubre el pedido de "que la app pueda no incluir
-comando por defecto".
+"Nuevo comando" que abre un campo de texto + label para guardarlo, y una
+opción de default **explícita** — "shell (default)" en modo Terminal,
+"claude-code-acp (default)" en modo Chat — en vez de un default siempre
+precargado. El default es visible en la UI y coincide con el fallback de
+`AcpSession.DEFAULT_AGENT`; nunca un fallback oculto tras una opción que dice
+"sin comando" (decisión cerrada, ver "Decisiones cerradas" #5). Cubre el
+pedido de "que la app pueda no incluir comando por defecto" en el sentido de
+que nada se precarga en el formulario: el usuario elige comando guardado,
+default explícito, o escribe uno nuevo.
 
 **`TerminalConfig`** pierde su rol de "única fuente de verdad guardada": pasa a
 construirse en el momento de conectar a partir de `ConnectionProfile` +
@@ -764,8 +769,8 @@ paralelo, descartado para V1, ver "Decisiones cerradas con el usuario").
 
 ### Decisiones cerradas con el usuario (2026-08-10)
 
-Las cuatro preguntas abiertas de este plan ya se resolvieron con el usuario;
-quedan fijadas para que DeepSeek ejecute sin tener que volver a decidirlas:
+Las preguntas abiertas de este plan ya se resolvieron con el usuario; quedan
+fijadas para que DeepSeek ejecute sin tener que volver a decidirlas:
 
 1. **Perfil por tab: siempre el mismo que el tab activo.** No se puede elegir
    perfil al abrir un tab nuevo en V1 — todos los tabs comparten la única
@@ -781,8 +786,92 @@ quedan fijadas para que DeepSeek ejecute sin tener que volver a decidirlas:
 4. **Copiar la clave desde "Mostrar clave" está permitido.** La fricción
    deliberada vive en el paso de "Mostrar" (no automático); una vez visible,
    copiarla al portapapeles es un flujo normal, sin bloqueo adicional.
+5. **El default de comando existe y es explícito, no oculto.** El pedido de
+   "no fijar un comando por defecto" se interpreta como: nada se precarga en
+   el formulario (no hay default "siempre precargado" como hoy), pero la
+   opción vacía del dropdown muestra el default con su nombre — "shell
+   (default)" en Terminal, "claude-code-acp (default)" en Chat — y el
+   fallback de `AcpSession.agentCommand` (`DEFAULT_AGENT = "claude-code-acp"`)
+   coincide con lo que la UI anuncia. Descartada la opción de error/validación
+   en modo Chat: "sin comando" + default explícito cumple el pedido sin
+   romper el flujo de "conectar y ya".
 
 ### Siguiente paso concreto
 
 Fase F no depende de nada pendiente — arranca por el storage antes de tocar
 ninguna UI, igual que el resto de fases de este plan ya siguieron ese orden.
+
+## Fases F–I — perfiles, claves, comandos y tabs: COMPLETADAS (2026-08-10)
+
+**Contenido:** las cuatro fases pendientes (almacenamiento multi-perfil,
+UI de perfiles/claves/comandos, `AcpSessionManager` multi-tab, `TabRow` en
+`ChatScreen`) llegaron ya escritas por DeepSeek; este cierre fue la
+verificación fuera de gradle de esa entrega, no una implementación nueva.
+
+- `profile/Profiles.kt`/`ProfileStore.kt`: `SavedKey`/`SavedCommand`/
+  `ConnectionProfile` con los campos del diseño (`mode`, `keyId`,
+  `commandId`, `acpRunDir`, `acpCwd`); `SecureStoreProfileStore` (Android,
+  JSON por colección + migración desde las keys sueltas de `SecureStore`) y
+  `DesktopProfileStore` (JSON en `~/.config/acp-ssh-kmp/profiles.json`,
+  permisos 600).
+- `ui/ProfilesScreen.kt`, `ui/KeyManagerDialog.kt`, `ui/CommandManagerDialog.kt`,
+  `ConnectionScreen` reescrita: dropdown de claves que nunca pinta el PEM
+  salvo "Mostrar", dropdown de comandos filtrado por modo con default
+  explícito coincidiendo con `AcpSession.DEFAULT_AGENT`.
+- `session/AcpSessionManager.kt`: un `AcpSession`/proceso por tab sobre una
+  única conexión SSH compartida, runDir autogenerado `tab-<id>`,
+  `openTab`/`closeTab`/`killTabAgent`, reconexión reabriendo los mismos
+  tabIds. `AndroidAcpHost`/`DesktopAcpHost` delegan en el manager en vez de
+  mantener una sola sesión.
+- `ChatScreen.kt`: `ScrollableTabRow` sobre los tabs del manager, límite
+  configurable con aviso, indicador de streaming/permiso pendiente en tabs
+  de fondo, acción separada para matar el agente remoto.
+
+**Bugs reales encontrados y corregidos durante la verificación:**
+
+1. `KeyManagerDialog.kt` no compilaba: usaba `Row(...)` sin importar
+   `androidx.compose.foundation.layout.Row`.
+2. `AcpSessionManagerTest.kt` no compilaba: cuatro referencias a `tabs`/
+   `connection` dentro de los tests le faltaba el receptor `manager.`
+   (`manager.tabs`/`manager.connection`), y un test (`unexpectedEofDisconnectsEverything`)
+   tenía como última expresión del bloque `try` un `withTimeout {}` que
+   devolvía un valor no-`Unit`, lo que JUnit4 rechaza como "should be void".
+3. **Bug real de producción, no solo de tests:** `AcpClient.close()`
+   cancelaba `readerJob` sin silenciar `onEof` antes — cancelar ese job
+   dispara el mismo bloque `finally` que un EOF real (`framer.lines().collect`
+   seguido de `onEof?.invoke()`), así que **cualquier cierre intencionado**
+   (cerrar un tab, reconectar) disparaba de todos modos el aviso de "conexión
+   perdida". Con tabIds reutilizados al reconectar (diseño de Fase H), el
+   `onEof` tardío de la sesión VIEJA de `tab-1` llegaba después de que
+   `entries["tab-1"]` ya apuntara a la sesión NUEVA, y `handleTabEof`
+   desconectaba la conexión recién abierta — reproducido de forma
+   determinista con `AcpSessionManagerTest.reconnectReopensSameTabsOnSameRunDirs`
+   (colgada esperando 2 tabs con sesión tras reconectar; instrumentado con
+   un watcher temporal que confirmó que `_tabs` se vaciaba justo después del
+   handshake de `tab-1`). **Fix:** `close()` pone `onEof = null` antes de
+   cancelar el lector.
+4. Bug menor de test (afecta solo fiabilidad de CI, no producción):
+   `AcpSessionManagerTest.FakeAgent.reader.readChunk` bloqueaba el hilo real
+   con `LinkedBlockingQueue.poll(30, SECONDS)` dentro de una `suspend fun`
+   sin `runInterruptible` — en una sandbox de 2 cores, con `Dispatchers.Default`
+   agotado por varios tests dejando hilos bloqueados sin liberar hasta el
+   timeout de 30s, el resto de la suite (incluyendo clases no relacionadas
+   como `AcpClientTest`) se quedaba sin hilos y todo empezaba a fallar por
+   timeout. Fix: envolver el `poll()` en `runInterruptible(Dispatchers.IO) { ... }`,
+   igual que ya hace el código de producción (Android/desktop) desde la
+   sección "Verificación real con SDK" de más arriba.
+5. `closeTabLeavesRemoteAgentAlive` comprobaba `execLog.none { "cat acp.pid" in it }`
+   para verificar que cerrar un tab no dispara un kill — pero ese mismo
+   substring ya aparece en el script de arranque idempotente
+   (`launchScript`, chequeo `ALREADY_RUNNING`) de CUALQUIER tab que se abre,
+   así que la aserción fallaba siempre, sin relación con el comportamiento
+   real de `closeTab`. Fix: comparar contra `RemoteAcpProcess.killCommand(runDir)`
+   exacto en vez de un substring ambiguo.
+
+**Verificación:** `:common:desktopTest` 123/124 en dos corridas consecutivas
+(el único que falla, `TerminalEmulatorTest.wrapsAtLastColumn`, es preexistente
+y ajeno a este diff, igual que ya se documentó en la sección "Verificación real
+con SDK y bugs encontrados/corregidos"); `:desktop:compileKotlinJvm` en verde.
+Sin Android SDK en este entorno: `:android:assembleDebug` y el smoke manual
+(selector de perfiles, gestor de claves/comandos, varios tabs de chat) quedan
+pendientes en una máquina con el SDK instalado, igual que en fases anteriores.
