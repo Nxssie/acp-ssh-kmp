@@ -183,6 +183,45 @@ class AcpSessionStoreTest {
         assertTrue(store.state.value.messages.isEmpty())
     }
 
+    @Test
+    fun timelineInterleavesMessagesAndToolCallsByArrivalOrder() {
+        // Reproduce el reporte real: user -> tool call -> respuesta -> otra
+        // tool call -> respuesta. Antes la UI mostraba todos los mensajes
+        // juntos y luego todas las tool calls, perdiendo este orden.
+        val store = AcpSessionStore()
+        store.onUserPrompt("lee el archivo")
+        store.onUpdate(toolCall("tc1"))
+        store.onUpdate(chunk("Leído.", "m1"))
+        store.onUpdate(toolCallUpdate("tc1", "completed")) // merge: no debe moverse
+        store.onUpdate(toolCall("tc2"))
+        store.onUpdate(chunk("Listo.", "m2"))
+
+        val timeline = store.state.value.timeline
+        val kinds = timeline.map { ref ->
+            when (ref) {
+                is TimelineRef.Msg -> "msg:" + store.state.value.messages[ref.index].text
+                is TimelineRef.Tool -> "tool:" + ref.id
+            }
+        }
+        assertEquals(
+            listOf("msg:lee el archivo", "tool:tc1", "msg:Leído.", "tool:tc2", "msg:Listo."),
+            kinds,
+        )
+        // La actualización de tc1 (merge) no agregó una segunda entrada.
+        assertEquals(1, timeline.count { it is TimelineRef.Tool && it.id == "tc1" })
+    }
+
+    private fun toolCall(id: String): SessionUpdate =
+        SessionUpdate.ToolCall(com.nxssie.acpssh.acp.AcpToolCall(id, "Herramienta", null, null, emptyList(), null, null))
+
+    private fun toolCallUpdate(id: String, status: String): SessionUpdate =
+        SessionUpdate.ToolCallUpdate(
+            com.nxssie.acpssh.acp.AcpToolCallUpdate(
+                toolCallId = id, title = null, kind = null, status = status,
+                content = emptyList(), rawInput = null, rawOutput = null,
+            ),
+        )
+
     private fun chunk(text: String, messageId: String?): SessionUpdate =
         SessionUpdate.AgentMessageChunk(
             ContentChunk(content = ContentBlock.Text(text), messageId = messageId),

@@ -18,7 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -74,6 +74,7 @@ import com.nxssie.acpssh.session.ChatBubble
 import com.nxssie.acpssh.session.ChatRole
 import com.nxssie.acpssh.session.PlanEntryUi
 import com.nxssie.acpssh.session.PermissionUi
+import com.nxssie.acpssh.session.TimelineRef
 import com.nxssie.acpssh.session.ToolCallUi
 
 /**
@@ -200,9 +201,9 @@ private fun ChatContent(
     val listState = rememberLazyListState()
     var input by remember { mutableStateOf("") }
 
-    // Índice real del último item: plan (si hay) + mensajes + tool calls, en ese
-    // orden — mismo orden en que se declaran en el LazyColumn de abajo.
-    val totalItems = state.messages.size + state.toolCalls.size + if (state.plan.isNotEmpty()) 1 else 0
+    // Índice real del último item: plan (si hay) + timeline, en ese orden —
+    // mismo orden en que se declaran en el LazyColumn de abajo.
+    val totalItems = state.timeline.size + if (state.plan.isNotEmpty()) 1 else 0
 
     // Solo sigue el fondo del chat si el usuario no se alejó a propósito para leer
     // historial; si scrollea hacia arriba, el contenido nuevo no lo debe "jalar"
@@ -216,10 +217,9 @@ private fun ChatContent(
         }
     }
 
-    // Autoscroll al último item cuando llega contenido nuevo, streaming de texto,
-    // o una tool call se agrega/actualiza (antes solo miraba state.messages, así
-    // que una tool call sin mensaje nuevo no hacía scrollear nada).
-    LaunchedEffect(totalItems, state.messages.lastOrNull()?.text?.length, state.toolCalls.lastOrNull()) {
+    // Autoscroll al último item cuando llega contenido nuevo o streaming de
+    // texto (una tool call nueva ya cuenta como item nuevo vía totalItems).
+    LaunchedEffect(totalItems, state.messages.lastOrNull()?.text?.length) {
         if (totalItems > 0 && stickToBottom.value) {
             listState.animateScrollToItem(totalItems - 1)
         }
@@ -255,11 +255,16 @@ private fun ChatContent(
             if (state.plan.isNotEmpty()) {
                 item { PlanCard(state.plan) }
             }
-            itemsIndexed(state.messages) { _, bubble ->
-                Bubble(bubble)
-            }
-            itemsIndexed(state.toolCalls) { _, tool ->
-                ToolCallCard(tool, onToggle = { onToggleToolCall(tool.id) })
+            // Un solo timeline intercalado en vez de "todos los mensajes,
+            // luego todas las tool calls" — antes las tool calls quedaban
+            // apiladas al final sin relación con cuándo se dispararon.
+            items(state.timeline) { ref ->
+                when (ref) {
+                    is TimelineRef.Msg -> state.messages.getOrNull(ref.index)?.let { Bubble(it) }
+                    is TimelineRef.Tool -> state.toolCalls.firstOrNull { it.id == ref.id }?.let { tool ->
+                        ToolCallCard(tool, onToggle = { onToggleToolCall(tool.id) })
+                    }
+                }
             }
         }
 

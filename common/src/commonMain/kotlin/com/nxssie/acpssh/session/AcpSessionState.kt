@@ -40,6 +40,25 @@ data class ToolCallUi(
 
 data class PlanEntryUi(val content: String, val status: String?)
 
+/**
+ * Referencia al orden cronológico real de aparición: [AcpSessionState.messages]
+ * y [AcpSessionState.toolCalls] son dos listas separadas (mensajes se van
+ * actualizando por chunk, tool calls por id), así que sin esto la UI no tiene
+ * forma de saber en qué orden intercalarlos — solo puede mostrar "todos los
+ * mensajes, luego todas las tool calls", perdiendo el orden real de llegada.
+ *
+ * [Msg] guarda el ÍNDICE en [AcpSessionState.messages], no el id: el id de
+ * respaldo para chunks sin messageId (`"auto-agent"`/`"auto-thought"`) es fijo
+ * y se reutiliza en cada turno nuevo, así que dos burbujas distintas pueden
+ * compartir id — el índice sí es estable (solo se agrega al final o se muta
+ * en el lugar la última entrada, nunca se reordena ni se borra).
+ * [Tool] sí puede usar id: `toolCallId` es único de verdad, nunca se reusa.
+ */
+sealed interface TimelineRef {
+    data class Msg(val index: Int) : TimelineRef
+    data class Tool(val id: String) : TimelineRef
+}
+
 /** `session/request_permission` pendiente de respuesta del usuario. */
 data class PermissionUi(
     val request: PermissionRequest,
@@ -52,6 +71,8 @@ data class AcpSessionState(
     val agentName: String? = null,
     val messages: List<ChatBubble> = emptyList(),
     val toolCalls: List<ToolCallUi> = emptyList(),
+    /** Orden real de aparición de [messages]/[toolCalls], para renderizarlos intercalados. */
+    val timeline: List<TimelineRef> = emptyList(),
     val plan: List<PlanEntryUi> = emptyList(),
     val pendingPermission: PermissionUi? = null,
     /** Un turno (prompt) en vuelo: el input se bloquea y se muestra cancelar. */
@@ -88,6 +109,7 @@ class AcpSessionStore {
                 is SessionUpdate.UserMessageChunk -> appendChunk(state, ChatRole.USER, update.chunk.messageId, update.chunk.content)
                 is SessionUpdate.ToolCall -> state.copy(
                     toolCalls = state.toolCalls + update.toolCall.toUi(),
+                    timeline = state.timeline + TimelineRef.Tool(update.toolCall.toolCallId),
                 )
                 is SessionUpdate.ToolCallUpdate -> mergeToolCall(state, update.toolCallUpdate)
                 is SessionUpdate.Plan -> state.copy(
@@ -102,12 +124,10 @@ class AcpSessionStore {
 
     fun onUserPrompt(text: String) {
         _state.update { state ->
+            val id = "user-${state.messages.size}"
             state.copy(
-                messages = state.messages + ChatBubble(
-                    id = "user-${state.messages.size}",
-                    role = ChatRole.USER,
-                    text = text,
-                ),
+                messages = state.messages + ChatBubble(id = id, role = ChatRole.USER, text = text),
+                timeline = state.timeline + TimelineRef.Msg(state.messages.size),
                 busy = true,
                 error = null,
             )
@@ -166,12 +186,16 @@ class AcpSessionStore {
         // (onTurnEnd la apaga): sin este chequeo, el id fijo de respaldo pegaría
         // el primer chunk del turno siguiente a la burbuja ya finalizada del
         // turno anterior en vez de abrir una nueva.
-        if (last != null && last.role == role && last.id == id && last.streaming) {
-            messages[messages.size - 1] = last.copy(text = last.text + text, streaming = true)
-        } else {
+        val isNewBubble = last == null || last.role != role || last.id != id || !last.streaming
+        if (isNewBubble) {
             messages.add(ChatBubble(id = id, role = role, text = text, streaming = true))
+        } else {
+            messages[messages.size - 1] = last.copy(text = last.text + text, streaming = true)
         }
-        return state.copy(messages = messages)
+        return state.copy(
+            messages = messages,
+            timeline = if (isNewBubble) state.timeline + TimelineRef.Msg(messages.size - 1) else state.timeline,
+        )
     }
 
     private fun mergeToolCall(state: AcpSessionState, update: AcpToolCallUpdate): AcpSessionState {
