@@ -26,6 +26,8 @@ data class TerminalConfig(
     val acpRunDir: String? = null,
     /** CWD de `session/new` (default: el `pwd` remoto del exec SSH). */
     val acpCwd: String? = null,
+    /** Id del [com.nxssie.acpssh.profile.ConnectionProfile] de origen, para persistir/resumir tabs ACP. */
+    val profileId: String? = null,
 )
 
 /**

@@ -44,6 +44,22 @@ data class NewSessionParams(
     val mcpServers: JsonArray = buildJsonArray { },
 )
 
+/**
+ * `session/load` (retomar una sesión existente): mismo [cwd] y [mcpServers]
+ * que en su momento devolvió `session/new`, más el [sessionId] a retomar. El
+ * agente responde con la misma forma que `session/new` pero ANTES manda todo
+ * el historial replayado como `session/update` normales — verificado contra
+ * el binario real (`@zed-industries/claude-code-acp` 0.16.2): reabre la MISMA
+ * sesión (incluye el `user_message_chunk` original, algo que un turno en vivo
+ * nunca manda) en una conexión nueva.
+ */
+@Serializable
+data class LoadSessionParams(
+    val sessionId: String,
+    val cwd: String,
+    val mcpServers: JsonArray = buildJsonArray { },
+)
+
 @Serializable
 data class PromptParams(val sessionId: String, val prompt: JsonElement)
 

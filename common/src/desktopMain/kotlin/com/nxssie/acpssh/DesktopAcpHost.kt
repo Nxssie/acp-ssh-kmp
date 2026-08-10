@@ -6,6 +6,7 @@ import com.nxssie.acpssh.acp.PermissionRequest
 import com.nxssie.acpssh.acp.RawByteChannel
 import com.nxssie.acpssh.acp.asRawByteChannel
 import com.nxssie.acpssh.jvm.SshjConnect
+import com.nxssie.acpssh.profile.ProfileStore
 import com.nxssie.acpssh.session.AcpHost
 import com.nxssie.acpssh.session.AcpSessionManager
 import com.nxssie.acpssh.session.AcpTabState
@@ -23,7 +24,7 @@ import java.io.File
  * Sin TOFU: usa `~/.ssh/known_hosts` si existe y, si no, verifier promiscuo
  * (herramienta de desarrollo).
  */
-class DesktopAcpHost : AcpHost {
+class DesktopAcpHost(profileStore: ProfileStore) : AcpHost {
 
     init {
         com.nxssie.acpssh.crypto.ensureBouncyCastleProvider()
@@ -35,6 +36,8 @@ class DesktopAcpHost : AcpHost {
             val knownHosts = File(System.getProperty("user.home"), ".ssh/known_hosts").takeIf { it.isFile }
             DesktopAcpTransport(SshjConnect.connect(config.toSshConfig(), knownHosts))
         },
+        loadSavedTabs = profileStore::loadSavedTabs,
+        saveTabs = profileStore::saveTabs,
     )
 
     override val connection: StateFlow<ConnectionState> = manager.connection

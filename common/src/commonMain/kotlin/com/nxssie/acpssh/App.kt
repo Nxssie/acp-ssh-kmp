@@ -16,6 +16,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -72,6 +73,19 @@ fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore) {
                 val config = store.resolve(profile) ?: return
                 store.setLastProfileId(profile.id)
                 if (mode == AcpMode.TERMINAL) terminalHost.connect(config) else acpHost.connect(config)
+            }
+
+            // Auto-reconecta al último perfil al arrancar el proceso (Android
+            // puede matarlo en background): sin esto, cada reinicio del proceso
+            // vuelve siempre a la lista de perfiles y hay que tocar "Conectar" a
+            // mano aunque el agente remoto siga vivo y la sesión ACP sea
+            // retomable (AcpSessionManager + session/load). Solo corre una vez
+            // por composición (LaunchedEffect(Unit)): no reintenta si el usuario
+            // desconecta manualmente después.
+            LaunchedEffect(Unit) {
+                val lastId = store.loadLastProfileId()
+                val profile = lastId?.let { id -> store.listProfiles().firstOrNull { it.id == id } }
+                if (profile != null) connect(profile)
             }
 
             when (connection.status) {

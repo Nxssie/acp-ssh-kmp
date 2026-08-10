@@ -6,6 +6,7 @@ import com.nxssie.acpssh.acp.PermissionOutcome
 import com.nxssie.acpssh.acp.PermissionRequest
 import com.nxssie.acpssh.acp.RawByteChannel
 import com.nxssie.acpssh.acp.SshjExecRawChannel
+import com.nxssie.acpssh.profile.ProfileStore
 import com.nxssie.acpssh.session.AcpHost
 import com.nxssie.acpssh.session.AcpSessionManager
 import com.nxssie.acpssh.session.AcpTabState
@@ -24,7 +25,7 @@ import net.schmizz.sshj.SSHClient
  * conexión dentro de la factoría: las host keys aceptadas persisten en el
  * store, así que no se pierde estado entre instancias.
  */
-class AndroidAcpHost(context: Context) : AcpHost {
+class AndroidAcpHost(context: Context, profileStore: ProfileStore) : AcpHost {
 
     init {
         com.nxssie.acpssh.crypto.ensureBouncyCastleProvider()
@@ -41,6 +42,8 @@ class AndroidAcpHost(context: Context) : AcpHost {
             verifier = v
             AndroidAcpTransport(withContext(Dispatchers.IO) { AndroidSsh.connect(config, v) })
         },
+        loadSavedTabs = profileStore::loadSavedTabs,
+        saveTabs = profileStore::saveTabs,
     )
 
     override val connection: StateFlow<ConnectionState> = manager.connection

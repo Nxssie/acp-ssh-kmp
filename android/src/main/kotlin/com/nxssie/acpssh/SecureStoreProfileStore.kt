@@ -5,6 +5,7 @@ import com.nxssie.acpssh.profile.ConnectionProfile
 import com.nxssie.acpssh.profile.ProfileStore
 import com.nxssie.acpssh.profile.SavedCommand
 import com.nxssie.acpssh.profile.SavedKey
+import com.nxssie.acpssh.profile.SavedTabSession
 import com.nxssie.acpssh.profile.newProfileId
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
@@ -66,6 +67,19 @@ class SecureStoreProfileStore(context: Context) : ProfileStore {
     override fun setLastProfileId(id: String?) {
         prefs.edit().putString(KEY_LAST_PROFILE, id).apply()
     }
+
+    override fun loadSavedTabs(profileId: String): List<SavedTabSession> =
+        readList(tabsKey(profileId), SavedTabSession.serializer())
+
+    override fun saveTabs(profileId: String, tabs: List<SavedTabSession>) {
+        if (tabs.isEmpty()) {
+            prefs.edit().remove(tabsKey(profileId)).apply()
+        } else {
+            writeList(tabsKey(profileId), SavedTabSession.serializer(), tabs)
+        }
+    }
+
+    private fun tabsKey(profileId: String) = "tabs:$profileId"
 
     private fun migrateLegacyConfig() {
         if (prefs.contains(KEY_PROFILES)) return

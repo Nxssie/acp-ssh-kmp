@@ -91,6 +91,21 @@ class AcpClient(
     }
 
     /**
+     * `session/load`: retoma [sessionId] (el agente manda todo su historial
+     * como `session/update` normales antes de responder). A diferencia de
+     * `session/new`, la respuesta no repite el sessionId — ya lo conocemos.
+     */
+    suspend fun loadSession(sessionId: String, cwd: String): NewSessionResult =
+        request("session/load", encodeToJson(LoadSessionParams(sessionId, cwd))) { result ->
+            val obj = result?.jsonObjectOrNull()
+            NewSessionResult(
+                sessionId = sessionId,
+                modes = obj?.get("modes") as? JsonObject,
+                configOptions = (obj?.get("configOptions") as? JsonArray)?.mapNotNull { it as? JsonObject },
+            )
+        }
+
+    /**
      * Envía un prompt y espera el fin de turno. Las actualizaciones de sesión
      * (chunks de texto, tool calls, plan…) llegan por [updates] mientras tanto;
      * un error del agente se devuelve en [PromptResult.error] sin lanzar.

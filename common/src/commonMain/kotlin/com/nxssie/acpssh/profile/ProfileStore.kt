@@ -27,6 +27,10 @@ interface ProfileStore {
     fun loadLastProfileId(): String?
     fun setLastProfileId(id: String?)
 
+    /** Tabs de chat ACP con sesión viva del perfil, para retomarlos (`session/load`) tras reconectar. */
+    fun loadSavedTabs(profileId: String): List<SavedTabSession>
+    fun saveTabs(profileId: String, tabs: List<SavedTabSession>)
+
     fun resolve(profile: ConnectionProfile): TerminalConfig? =
         resolveProfile(profile, listKeys(), listCommands())
 }

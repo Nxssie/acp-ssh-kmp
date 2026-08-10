@@ -1,6 +1,7 @@
 package com.nxssie.acpssh.session
 
 import com.nxssie.acpssh.acp.AcpClient
+import com.nxssie.acpssh.acp.AcpException
 import com.nxssie.acpssh.acp.AcpExecTransport
 import com.nxssie.acpssh.acp.DuplexRawByteChannel
 import com.nxssie.acpssh.acp.NdjsonFramer
@@ -40,8 +41,19 @@ class AcpSession(
     private var duplex: RawByteChannel? = null
     private var client: AcpClient? = null
 
+    /** cwd real usado en `session/new`/`session/load`, para persistir junto al sessionId y poder retomarla. */
+    var resolvedCwd: String? = null
+        private set
+
     /**
      * Arranca el agente remoto y negocia la sesión ACP.
+     *
+     * [resume] (sessionId, cwd de esa sesión) intenta `session/load` en vez de
+     * `session/new` — el agente real repone todo el historial como
+     * `session/update` normales antes de responder (verificado contra
+     * `claude-code-acp`). Si la sesión vieja ya no existe (archivo de historial
+     * rotado o borrado en el servidor), cae a una sesión nueva en vez de dejar
+     * el tab muerto.
      *
      * Acotado con [HANDSHAKE_TIMEOUT_MS]: `initialize`/`session/new` esperan una
      * respuesta que puede no llegar nunca si el agente remoto no arrancó bien
@@ -49,7 +61,7 @@ class AcpSession(
      * solo confirma que el lanzador corrió, no que el agente sigue vivo. Sin este
      * límite, el llamador se queda esperando para siempre sin ningún error.
      */
-    suspend fun start(): AcpSessionResult = try {
+    suspend fun start(resume: Pair<String, String>? = null): AcpSessionResult = try {
         withTimeout(HANDSHAKE_TIMEOUT_MS) {
             val launchOut = execCapture(RemoteAcpProcess.launchScript(runDir, agentCommand))
             check(launchOut == "STARTED" || launchOut == "ALREADY_RUNNING") {
@@ -64,8 +76,17 @@ class AcpSession(
             val client = AcpClient(NdjsonFramer(duplex), scope)
             client.start()
             val initialize = client.initialize()
-            val cwd = config.acpCwd?.takeIf { it.isNotBlank() } ?: execCapture("pwd")
-            val newSession = client.newSession(cwd)
+            val cwd = resume?.second ?: (config.acpCwd?.takeIf { it.isNotBlank() } ?: execCapture("pwd"))
+            this@AcpSession.resolvedCwd = cwd
+            val newSession = if (resume != null) {
+                try {
+                    client.loadSession(resume.first, cwd)
+                } catch (e: AcpException) {
+                    client.newSession(cwd)
+                }
+            } else {
+                client.newSession(cwd)
+            }
             this@AcpSession.client = client
             AcpSessionResult(client, initialize, newSession)
         }

@@ -4,6 +4,7 @@ import com.nxssie.acpssh.profile.ConnectionProfile
 import com.nxssie.acpssh.profile.ProfileStore
 import com.nxssie.acpssh.profile.SavedCommand
 import com.nxssie.acpssh.profile.SavedKey
+import com.nxssie.acpssh.profile.SavedTabSession
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -66,6 +67,20 @@ class DesktopProfileStore(
         mutate { it.copy(lastProfileId = id) }
     }
 
+    override fun loadSavedTabs(profileId: String): List<SavedTabSession> = load().tabsByProfile[profileId].orEmpty()
+
+    override fun saveTabs(profileId: String, tabs: List<SavedTabSession>) {
+        mutate {
+            it.copy(
+                tabsByProfile = if (tabs.isEmpty()) {
+                    it.tabsByProfile - profileId
+                } else {
+                    it.tabsByProfile + (profileId to tabs)
+                },
+            )
+        }
+    }
+
     @Synchronized
     private fun load(): StoreData =
         cache ?: readFromDisk().also { cache = it }
@@ -105,5 +120,6 @@ class DesktopProfileStore(
         val keys: List<SavedKey> = emptyList(),
         val commands: List<SavedCommand> = emptyList(),
         val lastProfileId: String? = null,
+        val tabsByProfile: Map<String, List<SavedTabSession>> = emptyMap(),
     )
 }

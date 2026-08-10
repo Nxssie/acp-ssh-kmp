@@ -6,6 +6,7 @@ import com.nxssie.acpssh.acp.PermissionOutcome
 import com.nxssie.acpssh.acp.PermissionRequest
 import com.nxssie.acpssh.acp.RemoteAcpProcess
 import com.nxssie.acpssh.acp.readAllToString
+import com.nxssie.acpssh.profile.SavedTabSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -46,6 +47,14 @@ class AcpSessionManager(
     private val scope: CoroutineScope,
     private val connectSsh: suspend (config: TerminalConfig, onHostKey: (PendingHostKey) -> Unit) -> AcpExecTransport,
     val maxTabs: Int = DEFAULT_MAX_TABS,
+    /**
+     * Tabs con sesión ACP persistidos del perfil (Fase F+): sobreviven a que
+     * Android mate el proceso en background. Sin [TerminalConfig.profileId]
+     * (o sin implementación real, valor por defecto) no se persiste ni se
+     * retoma nada — se comporta igual que antes.
+     */
+    private val loadSavedTabs: (profileId: String) -> List<SavedTabSession> = { emptyList() },
+    private val saveTabs: (profileId: String, tabs: List<SavedTabSession>) -> Unit = { _, _ -> },
 ) {
 
     private class TabEntry(
@@ -78,6 +87,12 @@ class AcpSessionManager(
     private var connectedConfig: TerminalConfig? = null
     private var connectJob: Job? = null
 
+    /** sessionId+cwd por tab que YA arrancó sesión, para persistir y poder retomarla (`session/load`). */
+    private val sessionRecords = mutableMapOf<String, SavedTabSession>()
+
+    /** sessionId+cwd pendiente de retomar en el próximo [openTabInternal] de ese tabId. */
+    private val resumeInfo = mutableMapOf<String, Pair<String, String>>()
+
     // --- conexión --------------------------------------------------------------
 
     fun connect(config: TerminalConfig) {
@@ -93,13 +108,40 @@ class AcpSessionManager(
                 mutex.withLock { transport = t }
                 _connection.value = ConnectionState(ConnectStatus.CONNECTED)
                 val pendingTabs = mutex.withLock { tabIds.toList() }
-                if (pendingTabs.isEmpty()) {
-                    openTabInternal(newTabId())
+                val tabsToOpen = if (pendingTabs.isNotEmpty()) {
+                    // Reconnect DENTRO del mismo proceso: mismos tabIds → mismos
+                    // runDirs → mismo proceso remoto si sigue vivo (arranque
+                    // idempotente, Fase B). sessionRecords ya tiene su sessionId de
+                    // la vez anterior si llegó a arrancar, para pasar por
+                    // session/load abajo en vez de perder la conversación.
+                    pendingTabs
                 } else {
-                    // Reconnect: mismos tabIds → mismos runDirs → mismo proceso
-                    // remoto si sigue vivo (arranque idempotente, Fase B).
-                    pendingTabs.forEach { openTabInternal(it) }
+                    // Manager recién creado (primer connect, o el proceso de la app
+                    // se reinició — Android puede matarlo en background): sin
+                    // tabIds en memoria, mirar si el perfil tiene tabs persistidos
+                    // en disco con sesión ACP real para retomarlos en vez de
+                    // arrancar siempre un tab-1 nuevo.
+                    val saved = config.profileId?.let(loadSavedTabs).orEmpty()
+                    if (saved.isEmpty()) {
+                        listOf(newTabId())
+                    } else {
+                        mutex.withLock {
+                            saved.forEach { s -> tabIds.add(s.tabId); sessionRecords[s.tabId] = s }
+                            val maxSeen = saved.mapNotNull {
+                                it.tabId.removePrefix("tab-").toIntOrNull()
+                            }.maxOrNull() ?: 0
+                            nextTabNumber = maxOf(nextTabNumber, maxSeen + 1)
+                        }
+                        saved.map { it.tabId }
+                    }
                 }
+                // Cualquier tab por (re)abrir con un sessionId conocido (de disco o
+                // de una sesión ya arrancada antes en este mismo proceso) intenta
+                // session/load en vez de session/new — unifica ambos caminos.
+                mutex.withLock {
+                    tabsToOpen.forEach { id -> sessionRecords[id]?.let { resumeInfo[id] = it.sessionId to it.cwd } }
+                }
+                tabsToOpen.forEach { openTabInternal(it) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -155,6 +197,7 @@ class AcpSessionManager(
     fun killTabAgent(tabId: String) {
         scope.launch {
             val runDir = mutex.withLock { entries[tabId]?.runDir }
+            // closeTabInternal ya sacaba el tab de sessionRecords/tabIds y persiste.
             closeTabInternal(tabId)
             val t = mutex.withLock { transport } ?: return@launch
             if (runDir != null) {
@@ -191,9 +234,10 @@ class AcpSessionManager(
         }
         scope.launch(job) { store.state.collect { state -> publishTab(tabId, state) } }
         if (_activeTabId.value == null) _activeTabId.value = tabId
+        val resume = mutex.withLock { resumeInfo.remove(tabId) }
         try {
             val session = AcpSession(t, config.copy(acpRunDir = runDir), scope)
-            val result = session.start()
+            val result = session.start(resume)
             entry.acpSession = session
             entry.client = result.client
             result.client.onEof = { scope.launch { handleTabEof(tabId) } }
@@ -213,6 +257,8 @@ class AcpSessionManager(
                 agentName = result.initialize.agentTitle ?: result.initialize.agentName,
                 sessionId = result.newSession.sessionId,
             )
+            val cwd = session.resolvedCwd
+            if (cwd != null) persistTabSession(config.profileId, tabId, result.newSession.sessionId, cwd)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -220,6 +266,16 @@ class AcpSessionManager(
             // tumba la conexión ni los demás tabs: se queda con su error.
             store.onError(e.message ?: e.toString())
         }
+    }
+
+    /** Guarda (o actualiza) el sessionId+cwd real de un tab para poder retomarlo tras un reinicio del proceso. */
+    private suspend fun persistTabSession(profileId: String?, tabId: String, sessionId: String, cwd: String) {
+        if (profileId == null) return
+        val snapshot = mutex.withLock {
+            sessionRecords[tabId] = SavedTabSession(tabId, sessionId, cwd)
+            sessionRecords.values.toList()
+        }
+        saveTabs(profileId, snapshot)
     }
 
     private suspend fun closeTabInternal(tabId: String) {
@@ -232,6 +288,16 @@ class AcpSessionManager(
         } ?: return
         entry.job?.cancel()
         runCatching { entry.acpSession?.close() }
+        // Cerrar un tab es una decisión explícita del usuario: no debe volver a
+        // aparecer solo por reabrir la app (el proceso remoto sigue vivo igual,
+        // esto solo afecta qué se auto-reabre al reconectar/reiniciar).
+        val profileId = connectedConfig?.profileId
+        val snapshot = mutex.withLock {
+            resumeInfo.remove(tabId)
+            sessionRecords.remove(tabId)
+            sessionRecords.values.toList()
+        }
+        if (profileId != null) saveTabs(profileId, snapshot)
         _tabs.update { list -> list.filter { it.tabId != tabId } }
         if (_activeTabId.value == tabId) {
             _activeTabId.value = _tabs.value.firstOrNull()?.tabId

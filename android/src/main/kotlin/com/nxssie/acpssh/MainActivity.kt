@@ -15,8 +15,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         terminalHost = AndroidSshTerminalHost(applicationContext)
-        acpHost = AndroidAcpHost(applicationContext)
         profileStore = SecureStoreProfileStore(applicationContext)
+        acpHost = AndroidAcpHost(applicationContext, profileStore)
         setContent {
             App(terminalHost, acpHost, profileStore)
         }

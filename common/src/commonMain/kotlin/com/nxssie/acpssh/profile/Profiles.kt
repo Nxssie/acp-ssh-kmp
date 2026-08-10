@@ -58,6 +58,16 @@ data class ConnectionProfile(
 fun newProfileId(): String =
     Random.nextLong().toULong().toString(16) + "-" + Random.nextLong().toULong().toString(16)
 
+/**
+ * Snapshot de un tab de chat ACP con sesión ya arrancada, persistido para poder
+ * retomarlo (`session/load`) tras un reinicio del proceso (Android puede matar
+ * la app en background). [cwd] es el mismo que se usó al crear la sesión — el
+ * agente real indexa sus archivos de sesión por cwd, así que hay que reusarlo
+ * tal cual en vez de recalcularlo al reconectar.
+ */
+@Serializable
+data class SavedTabSession(val tabId: String, val sessionId: String, val cwd: String)
+
 /** Construye la config de conexión a partir del perfil y sus referencias ya resueltas. */
 fun ConnectionProfile.toTerminalConfig(key: SavedKey, command: SavedCommand?): TerminalConfig =
     TerminalConfig(
@@ -69,6 +79,7 @@ fun ConnectionProfile.toTerminalConfig(key: SavedKey, command: SavedCommand?): T
         publicKeyLine = key.publicKeyLine,
         acpRunDir = acpRunDir?.takeIf { it.isNotBlank() },
         acpCwd = acpCwd?.takeIf { it.isNotBlank() },
+        profileId = id,
     )
 
 /**

@@ -3,6 +3,7 @@ package com.nxssie.acpssh
 import com.nxssie.acpssh.profile.ConnectionProfile
 import com.nxssie.acpssh.profile.SavedCommand
 import com.nxssie.acpssh.profile.SavedKey
+import com.nxssie.acpssh.profile.SavedTabSession
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -84,5 +85,29 @@ class DesktopProfileStoreTest {
         val (store, file) = tempStore()
         file.writeText("{ no json valido")
         assertTrue(store.listProfiles().isEmpty())
+    }
+
+    @Test
+    fun savedTabsPersistAcrossInstancesAndAreScopedByProfile() {
+        val (store, file) = tempStore()
+        val tabs = listOf(
+            SavedTabSession("tab-1", "sess-a", "/home/agent"),
+            SavedTabSession("tab-2", "sess-b", "/home/agent"),
+        )
+        store.saveTabs("p1", tabs)
+        store.saveTabs("p2", listOf(SavedTabSession("tab-1", "sess-c", "/tmp")))
+
+        val reloaded = DesktopProfileStore(file)
+        assertEquals(tabs, reloaded.loadSavedTabs("p1"))
+        assertEquals(listOf(SavedTabSession("tab-1", "sess-c", "/tmp")), reloaded.loadSavedTabs("p2"))
+        assertTrue(reloaded.loadSavedTabs("p3").isEmpty())
+    }
+
+    @Test
+    fun savingEmptyTabsClearsThePersistedRecord() {
+        val (store, _) = tempStore()
+        store.saveTabs("p1", listOf(SavedTabSession("tab-1", "sess-a", "/home/agent")))
+        store.saveTabs("p1", emptyList())
+        assertTrue(store.loadSavedTabs("p1").isEmpty())
     }
 }

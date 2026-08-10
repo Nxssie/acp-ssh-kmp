@@ -46,8 +46,8 @@ fun main(args: Array<String>) {
     application {
         Window(onCloseRequest = ::exitApplication, title = "ACP Terminal") {
             val terminalHost = remember { DesktopSshTerminalHost() }
-            val acpHost = remember { DesktopAcpHost() }
             val profileStore = remember { DesktopProfileStore() }
+            val acpHost = remember { DesktopAcpHost(profileStore) }
             App(terminalHost, acpHost, profileStore)
         }
     }
