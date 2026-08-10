@@ -59,6 +59,33 @@ fun newProfileId(): String =
     Random.nextLong().toULong().toString(16) + "-" + Random.nextLong().toULong().toString(16)
 
 /**
+ * Comandos precargados de fábrica (agentes ACP verificados a mano contra el
+ * servidor real). Solo texto — ninguna credencial, host ni clave va acá, así
+ * que es seguro hornearlo en un APK público. Ids fijos: las implementaciones
+ * de [ProfileStore] los siembran una sola vez en el primer arranque (no
+ * reaparecen si el usuario los borra después).
+ *
+ * Las rutas son absolutas porque el `sh` no interactivo que usa el lanzador
+ * remoto (SSH `exec`) no hereda el PATH de un shell interactivo — ver
+ * RemoteAcpProcess/AcpSession. Si el servidor de destino tiene otro usuario o
+ * instalación, hay que editar el comando manualmente.
+ */
+val DEFAULT_COMMAND_SEEDS: List<SavedCommand> = listOf(
+    SavedCommand(
+        id = "seed-claude-code-acp",
+        label = "claude-code-acp",
+        command = "/home/agent/.bun/bin/claude-code-acp",
+        mode = AcpMode.CHAT,
+    ),
+    SavedCommand(
+        id = "seed-pi-acp",
+        label = "pi-acp",
+        command = "/home/agent/.bun/bin/pi-acp",
+        mode = AcpMode.CHAT,
+    ),
+)
+
+/**
  * Snapshot de un tab de chat ACP con sesión ya arrancada, persistido para poder
  * retomarlo (`session/load`) tras un reinicio del proceso (Android puede matar
  * la app en background). [cwd] es el mismo que se usó al crear la sesión — el

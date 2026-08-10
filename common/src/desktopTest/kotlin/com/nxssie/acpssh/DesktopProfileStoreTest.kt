@@ -31,7 +31,6 @@ class DesktopProfileStoreTest {
         val (store, _) = tempStore()
         assertTrue(store.listProfiles().isEmpty())
         assertTrue(store.listKeys().isEmpty())
-        assertTrue(store.listCommands().isEmpty())
         assertNull(store.loadLastProfileId())
     }
 
@@ -48,7 +47,7 @@ class DesktopProfileStoreTest {
         val reloaded = DesktopProfileStore(file)
         assertEquals(listOf(profile), reloaded.listProfiles())
         assertEquals(listOf(key), reloaded.listKeys())
-        assertEquals("cmd", reloaded.listCommands().single().label)
+        assertEquals("cmd", reloaded.listCommands().single { it.id == "c1" }.label)
         assertEquals("p1", reloaded.loadLastProfileId())
     }
 
@@ -118,5 +117,24 @@ class DesktopProfileStoreTest {
         assertNull(store.loadLastMode())
         store.setLastMode(AcpMode.CHAT)
         assertEquals(AcpMode.CHAT, DesktopProfileStore(file).loadLastMode())
+    }
+
+    @Test
+    fun defaultCommandsAreSeededOnFirstUse() {
+        val (store, _) = tempStore()
+        val labels = store.listCommands().map { it.label }
+        assertTrue("claude-code-acp" in labels)
+        assertTrue("pi-acp" in labels)
+    }
+
+    @Test
+    fun deletedDefaultCommandDoesNotReappearOnNextLaunch() {
+        val (store, file) = tempStore()
+        val piAcp = store.listCommands().single { it.label == "pi-acp" }
+        store.deleteCommand(piAcp.id)
+
+        val reloaded = DesktopProfileStore(file)
+        assertTrue(reloaded.listCommands().none { it.label == "pi-acp" })
+        assertTrue(reloaded.listCommands().any { it.label == "claude-code-acp" })
     }
 }

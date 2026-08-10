@@ -1,6 +1,7 @@
 package com.nxssie.acpssh
 
 import com.nxssie.acpssh.profile.ConnectionProfile
+import com.nxssie.acpssh.profile.DEFAULT_COMMAND_SEEDS
 import com.nxssie.acpssh.profile.ProfileStore
 import com.nxssie.acpssh.profile.SavedCommand
 import com.nxssie.acpssh.profile.SavedKey
@@ -26,6 +27,20 @@ class DesktopProfileStore(
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = true }
     private var cache: StoreData? = null
+
+    init {
+        // Comandos de fábrica (claude-code-acp/pi-acp) una sola vez, en el
+        // primer arranque real: el flag evita que reaparezcan si el usuario
+        // los borra después.
+        if (!load().commandsSeeded) {
+            mutate { state ->
+                state.copy(
+                    commands = DEFAULT_COMMAND_SEEDS.fold(state.commands) { acc, seed -> acc.upsert(seed) { c -> c.id } },
+                    commandsSeeded = true,
+                )
+            }
+        }
+    }
 
     override fun listProfiles(): List<ConnectionProfile> = load().profiles
 
@@ -129,5 +144,6 @@ class DesktopProfileStore(
         val lastProfileId: String? = null,
         val tabsByProfile: Map<String, List<SavedTabSession>> = emptyMap(),
         val lastMode: String? = null,
+        val commandsSeeded: Boolean = false,
     )
 }

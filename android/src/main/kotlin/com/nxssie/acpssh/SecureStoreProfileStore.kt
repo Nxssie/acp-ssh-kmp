@@ -2,6 +2,7 @@ package com.nxssie.acpssh
 
 import android.content.Context
 import com.nxssie.acpssh.profile.ConnectionProfile
+import com.nxssie.acpssh.profile.DEFAULT_COMMAND_SEEDS
 import com.nxssie.acpssh.profile.ProfileStore
 import com.nxssie.acpssh.profile.SavedCommand
 import com.nxssie.acpssh.profile.SavedKey
@@ -30,6 +31,17 @@ class SecureStoreProfileStore(context: Context) : ProfileStore {
 
     init {
         migrateLegacyConfig()
+        seedDefaultCommands()
+    }
+
+    /**
+     * Comandos de fábrica (claude-code-acp/pi-acp) una sola vez, en el primer
+     * arranque real: si la key de comandos ya existe (con o sin nada dentro,
+     * p. ej. porque el usuario los borró) no se reinsertan.
+     */
+    private fun seedDefaultCommands() {
+        if (prefs.contains(KEY_COMMANDS)) return
+        writeList(KEY_COMMANDS, SavedCommand.serializer(), DEFAULT_COMMAND_SEEDS)
     }
 
     override fun listProfiles(): List<ConnectionProfile> = readList(KEY_PROFILES, ConnectionProfile.serializer())
