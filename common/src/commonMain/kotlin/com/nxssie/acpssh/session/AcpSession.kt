@@ -8,6 +8,8 @@ import com.nxssie.acpssh.acp.RawByteChannel
 import com.nxssie.acpssh.acp.RemoteAcpProcess
 import com.nxssie.acpssh.acp.readAllToString
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 
 /** Resultado de arrancar una sesión ACP completa. */
 data class AcpSessionResult(
@@ -38,25 +40,41 @@ class AcpSession(
     private var duplex: RawByteChannel? = null
     private var client: AcpClient? = null
 
-    /** Arranca el agente remoto y negocia la sesión ACP. */
-    suspend fun start(): AcpSessionResult {
-        val launchOut = execCapture(RemoteAcpProcess.launchScript(runDir, agentCommand))
-        check(launchOut == "STARTED" || launchOut == "ALREADY_RUNNING") {
-            "respuesta de arranque del agente inesperada: '$launchOut'"
+    /**
+     * Arranca el agente remoto y negocia la sesión ACP.
+     *
+     * Acotado con [HANDSHAKE_TIMEOUT_MS]: `initialize`/`session/new` esperan una
+     * respuesta que puede no llegar nunca si el agente remoto no arrancó bien
+     * (binario no instalado, falta auth, error de arranque) — el `launchScript`
+     * solo confirma que el lanzador corrió, no que el agente sigue vivo. Sin este
+     * límite, el llamador se queda esperando para siempre sin ningún error.
+     */
+    suspend fun start(): AcpSessionResult = try {
+        withTimeout(HANDSHAKE_TIMEOUT_MS) {
+            val launchOut = execCapture(RemoteAcpProcess.launchScript(runDir, agentCommand))
+            check(launchOut == "STARTED" || launchOut == "ALREADY_RUNNING") {
+                "respuesta de arranque del agente inesperada: '$launchOut'"
+            }
+
+            val reader = transport.exec(RemoteAcpProcess.readerCommand(runDir))
+            val writer = transport.exec(RemoteAcpProcess.writerCommand(runDir))
+            val duplex = DuplexRawByteChannel(reader, writer)
+            this@AcpSession.duplex = duplex
+
+            val client = AcpClient(NdjsonFramer(duplex), scope)
+            client.start()
+            val initialize = client.initialize()
+            val cwd = config.acpCwd?.takeIf { it.isNotBlank() } ?: execCapture("pwd")
+            val newSession = client.newSession(cwd)
+            this@AcpSession.client = client
+            AcpSessionResult(client, initialize, newSession)
         }
-
-        val reader = transport.exec(RemoteAcpProcess.readerCommand(runDir))
-        val writer = transport.exec(RemoteAcpProcess.writerCommand(runDir))
-        val duplex = DuplexRawByteChannel(reader, writer)
-        this.duplex = duplex
-
-        val client = AcpClient(NdjsonFramer(duplex), scope)
-        client.start()
-        val initialize = client.initialize()
-        val cwd = config.acpCwd?.takeIf { it.isNotBlank() } ?: execCapture("pwd")
-        val newSession = client.newSession(cwd)
-        this.client = client
-        return AcpSessionResult(client, initialize, newSession)
+    } catch (e: TimeoutCancellationException) {
+        throw IllegalStateException(
+            "El agente ACP remoto ('$agentCommand') no respondió en ${HANDSHAKE_TIMEOUT_MS / 1000}s. " +
+                "Revisa que esté instalado y corriendo (log: $runDir/${RemoteAcpProcess.STDERR_LOG} en el servidor).",
+            e,
+        )
     }
 
     fun close() {
@@ -79,5 +97,6 @@ class AcpSession(
     companion object {
         const val DEFAULT_RUN_DIR = ".acp-ssh-kmp"
         const val DEFAULT_AGENT = "claude-code-acp"
+        const val HANDSHAKE_TIMEOUT_MS = 20_000L
     }
 }
