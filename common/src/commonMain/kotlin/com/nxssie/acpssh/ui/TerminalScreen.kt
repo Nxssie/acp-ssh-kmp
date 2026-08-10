@@ -12,10 +12,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardReturn
+import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -128,9 +133,13 @@ fun TerminalScreen(host: TerminalHost) {
             KeyButton("Ctrl+Z", Modifier.weight(1f)) { host.send(byteArrayOf(Ansi.ctrl('z'))) }
             KeyButton("Ctrl+L", Modifier.weight(1f)) { host.send(byteArrayOf(Ansi.ctrl('l'))) }
             Spacer(Modifier.weight(1f))
-            // Texto plano en vez del símbolo "⏻" (U+23FB): muchas fuentes de
-            // Android no tienen ese glifo y el botón se veía vacío.
-            TextButton(onClick = { host.disconnect() }) { Text("Salir") }
+            // Ícono real de Material en vez del símbolo "⏻" (U+23FB): muchas
+            // fuentes de Android no tienen ese glifo y el botón se veía vacío.
+            TextButton(onClick = { host.disconnect() }) {
+                Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Salir")
+            }
         }
 
         // Toolbar 2: navegación
@@ -170,7 +179,7 @@ fun TerminalScreen(host: TerminalHost) {
                 keyboardActions = KeyboardActions(onSend = { sendLine(host, input); input = "" }),
             )
             TextButton(onClick = { sendLine(host, input); input = "" }) {
-                Text("↵")
+                Icon(Icons.AutoMirrored.Filled.KeyboardReturn, contentDescription = "Enviar")
             }
         }
     }

@@ -13,11 +13,20 @@ coroutinesAndroid = "1.11.0"
 # Material3 tiene tren de versiones propio (desacoplado de CMP): no existe
 # estable 1.11.x; 1.9.0 es la última estable y es compatible con CMP 1.11.
 composeMaterial3 = "1.9.0"
+# Icons (core+extended) también van desacopladas: el set de íconos apenas
+# cambia, así que no siguen el ritmo de releases del runtime de CMP — 1.7.3
+# es la última publicada de ambas (verificado en Maven Central: bajé los
+# jars y confirmé con unzip -l qué clase vive en cuál — Close/MoreVert/Send
+# viven en core, Stop/Logout/KeyboardReturn en extended; desde CMP 1.8.2
+# "extended" ya no trae "core" transitivo, así que hacen falta las dos).
+composeMaterialIcons = "1.7.3"
 
 [libraries]
 compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "compose" }
 compose-foundation = { module = "org.jetbrains.compose.foundation:foundation", version.ref = "compose" }
 compose-material3 = { module = "org.jetbrains.compose.material3:material3", version.ref = "composeMaterial3" }
+compose-material-icons-core = { module = "org.jetbrains.compose.material:material-icons-core", version.ref = "composeMaterialIcons" }
+compose-material-icons-extended = { module = "org.jetbrains.compose.material:material-icons-extended", version.ref = "composeMaterialIcons" }
 
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }

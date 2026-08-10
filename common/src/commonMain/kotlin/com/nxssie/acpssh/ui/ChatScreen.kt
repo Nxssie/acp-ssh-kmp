@@ -25,11 +25,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ScrollableTabRow
@@ -172,11 +179,11 @@ private fun ChatTabsRow(
                                 overflow = TextOverflow.Ellipsis,
                             )
                             Spacer(Modifier.width(6.dp))
-                            Text(
-                                "✕",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.clickable { onClose(tab.tabId) },
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Cerrar tab",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp).clickable { onClose(tab.tabId) },
                             )
                         }
                     },
@@ -333,7 +340,7 @@ private fun ChatHeader(
             }
         }
         Box {
-            TextButton(onClick = { menuOpen = true }) { Text("⋮") }
+            TextButton(onClick = { menuOpen = true }) { Icon(Icons.Default.MoreVert, contentDescription = "Más opciones") }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 DropdownMenuItem(
                     text = { Text("Cerrar tab") },
@@ -351,9 +358,13 @@ private fun ChatHeader(
                 )
             }
         }
-        // Texto plano en vez del símbolo "⏻" (U+23FB): muchas fuentes de
-        // Android no tienen ese glifo y el botón se veía vacío.
-        TextButton(onClick = onDisconnect) { Text("Salir") }
+        // Ícono real de Material en vez del símbolo "⏻" (U+23FB): muchas
+        // fuentes de Android no tienen ese glifo y el botón se veía vacío.
+        TextButton(onClick = onDisconnect) {
+            Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Salir")
+        }
     }
 }
 
@@ -663,7 +674,7 @@ private fun ChatInput(
     ) {
         if (busy) {
             OutlinedButton(onClick = onCancel, contentPadding = PaddingValues(horizontal = 12.dp)) {
-                Text("■")
+                Icon(Icons.Default.Stop, contentDescription = "Cancelar turno", modifier = Modifier.size(18.dp))
             }
         }
         BasicTextField(
@@ -681,6 +692,8 @@ private fun ChatInput(
             enabled = !busy,
         )
         Button(onClick = onSend, enabled = !busy) {
+            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
             Text("Enviar")
         }
     }
