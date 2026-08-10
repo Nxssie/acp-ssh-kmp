@@ -50,4 +50,5 @@ dependencies {
     implementation(libs.sshj)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.security.crypto)
+    implementation(libs.kotlinx.serialization.json)
 }
