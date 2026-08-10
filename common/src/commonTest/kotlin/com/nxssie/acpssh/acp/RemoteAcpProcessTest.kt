@@ -92,17 +92,32 @@ class RemoteAcpProcessTest {
 
     @Test
     fun readerCommandCatsStdoutFifoFromRunDir() {
-        assertEquals(
-            "cd '/tmp/run' && exec cat ${RemoteAcpProcess.STDOUT_FIFO}",
-            RemoteAcpProcess.readerCommand("/tmp/run"),
-        )
+        val command = RemoteAcpProcess.readerCommand("/tmp/run")
+        assertTrue(command.startsWith("cd '/tmp/run' && "))
+        assertTrue(command.endsWith("exec cat ${RemoteAcpProcess.STDOUT_FIFO}"))
+    }
+
+    @Test
+    fun readerCommandKillsPreviousReaderBeforeRecordingItsOwnPid() {
+        // Sin pty, cerrar el canal exec no le llega como señal al `cat` remoto:
+        // sin este relevo, el lector huérfano de una conexión anterior podría
+        // quedarse compitiendo con el nuevo por el siguiente mensaje del FIFO.
+        val command = RemoteAcpProcess.readerCommand("/tmp/run")
+        assertTrue(command.contains("kill \"\$(cat ${RemoteAcpProcess.READER_PID_FILE})\""))
+        assertTrue(command.contains("echo \$\$ > ${RemoteAcpProcess.READER_PID_FILE}"))
     }
 
     @Test
     fun writerCommandAppendsStdinToStdinFifo() {
-        assertEquals(
-            "cd '/tmp/run' && exec cat >> ${RemoteAcpProcess.STDIN_FIFO}",
-            RemoteAcpProcess.writerCommand("/tmp/run"),
-        )
+        val command = RemoteAcpProcess.writerCommand("/tmp/run")
+        assertTrue(command.startsWith("cd '/tmp/run' && "))
+        assertTrue(command.endsWith("exec cat >> ${RemoteAcpProcess.STDIN_FIFO}"))
+    }
+
+    @Test
+    fun writerCommandKillsPreviousWriterBeforeRecordingItsOwnPid() {
+        val command = RemoteAcpProcess.writerCommand("/tmp/run")
+        assertTrue(command.contains("kill \"\$(cat ${RemoteAcpProcess.WRITER_PID_FILE})\""))
+        assertTrue(command.contains("echo \$\$ > ${RemoteAcpProcess.WRITER_PID_FILE}"))
     }
 }

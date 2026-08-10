@@ -35,6 +35,10 @@ object RemoteAcpProcess {
     /** Archivo con el PID del agente, usado para detectar si sigue vivo. */
     const val PID_FILE = "acp.pid"
 
+    /** Archivo con el PID del último lector/escritor del FIFO, ver [readerCommand]/[writerCommand]. */
+    const val READER_PID_FILE = "acp-reader.pid"
+    const val WRITER_PID_FILE = "acp-writer.pid"
+
     /**
      * Script POSIX sh que arranca el agente si no está corriendo ya (idempotente:
      * relanzar mientras vive no hace nada, solo informa). Imprime `STARTED` o
@@ -60,13 +64,26 @@ object RemoteAcpProcess {
         fi
     """.trimIndent()
 
-    /** Comando que expone el pipe de salida como stdout de un `exec` SSH. */
+    /**
+     * Comando que expone el pipe de salida como stdout de un `exec` SSH.
+     *
+     * Cierra primero el `cat` anterior (si quedó uno huérfano de una conexión
+     * previa): sin pty, cerrar el canal `exec` desde el cliente no le llega
+     * como señal al remoto — el `cat` viejo se queda bloqueado leyendo el FIFO
+     * y puede competir con el nuevo por el próximo mensaje que llegue (el
+     * kernel entrega cada escritura del FIFO a un solo lector de los que estén
+     * bloqueados, no a todos), perdiéndolo si se lo entrega al huérfano.
+     */
     fun readerCommand(runDir: String): String =
-        "cd ${shellQuote(runDir)} && exec cat $STDOUT_FIFO"
+        "cd ${shellQuote(runDir)} && " +
+            "{ [ -f $READER_PID_FILE ] && kill \"\$(cat $READER_PID_FILE)\" 2>/dev/null; :; }; " +
+            "echo \$\$ > $READER_PID_FILE; exec cat $STDOUT_FIFO"
 
-    /** Comando que vuelca el stdin de un `exec` SSH al pipe de entrada. */
+    /** Comando que vuelca el stdin de un `exec` SSH al pipe de entrada (misma lógica de relevo que [readerCommand]). */
     fun writerCommand(runDir: String): String =
-        "cd ${shellQuote(runDir)} && exec cat >> $STDIN_FIFO"
+        "cd ${shellQuote(runDir)} && " +
+            "{ [ -f $WRITER_PID_FILE ] && kill \"\$(cat $WRITER_PID_FILE)\" 2>/dev/null; :; }; " +
+            "echo \$\$ > $WRITER_PID_FILE; exec cat >> $STDIN_FIFO"
 
     /** Quoting POSIX sh de un valor arbitrario como literal de una sola palabra. */
     fun shellQuote(value: String): String =
