@@ -127,10 +127,24 @@ private class SshjExecChannel(
         exec.exitStatus ?: -1
     }
 
-    override fun close() {
-        exec.close()
-        session.close()
-    }
+    override fun close() = closeChannelWithTimeout({ exec.close() }, { session.close() })
+}
+
+/**
+ * Cierra un canal SSHJ acotando la espera: `Channel.close()` bloquea hasta
+ * recibir el ACK de cierre del remoto, y para el canal `exec` que lee el FIFO
+ * persistente de ACP ([RemoteAcpProcess]) ese ACK nunca llega — el proceso
+ * remoto que respalda el canal sigue vivo a propósito para sobrevivir a la
+ * desconexión, así que sin este límite el cierre se cuelga con el timeout por
+ * defecto de SSHJ (30s). El cierre real sigue en un hilo daemon: si termina
+ * antes del límite no hay diferencia; si no, lo abandona (se libera cuando el
+ * transporte SSH se desconecte del todo) y el llamador no se bloquea.
+ */
+private fun closeChannelWithTimeout(vararg actions: () -> Unit, timeoutMs: Long = 2_000) {
+    val thread = Thread { actions.forEach { runCatching(it) } }
+    thread.isDaemon = true
+    thread.start()
+    thread.join(timeoutMs)
 }
 
 private class SshjPtyShell(

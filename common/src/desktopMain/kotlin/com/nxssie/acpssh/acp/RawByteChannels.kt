@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 
 /**
  * Bridge del canal `exec` de desktop (kotlinx.io Source/Sink) al [RawByteChannel]
@@ -22,17 +23,21 @@ fun ExecChannel.asRawByteChannel(): RawByteChannel {
     }
 
     return object : RawByteChannel {
-        override suspend fun readChunk(buffer: ByteArray): Int {
+        // runInterruptible: sin esto, un `withTimeout`/cancel no puede interrumpir
+        // esta llamada — es una lectura bloqueante de Java por debajo (ChannelInputStream
+        // de SSHJ), no un punto de suspensión cooperativo. Confirmado que SSHJ
+        // convierte la interrupción del hilo en InterruptedIOException correctamente.
+        override suspend fun readChunk(buffer: ByteArray): Int = runInterruptible(Dispatchers.IO) {
             val n = stdout.readAtMostTo(buffer)
             // kotlinx.io devuelve 0 o -1 al agotar el source; -1 es el EOF del contrato.
-            return if (n <= 0) -1 else n
+            if (n <= 0) -1 else n
         }
 
-        override suspend fun write(bytes: ByteArray) {
+        override suspend fun write(bytes: ByteArray) = runInterruptible(Dispatchers.IO) {
             stdin.write(bytes)
         }
 
-        override suspend fun flush() {
+        override suspend fun flush() = runInterruptible(Dispatchers.IO) {
             stdin.flush()
         }
 
