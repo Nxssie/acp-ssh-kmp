@@ -346,7 +346,9 @@ private fun ChatHeader(
                 )
             }
         }
-        TextButton(onClick = onDisconnect) { Text("⏻") }
+        // Texto plano en vez del símbolo "⏻" (U+23FB): muchas fuentes de
+        // Android no tienen ese glifo y el botón se veía vacío.
+        TextButton(onClick = onDisconnect) { Text("Salir") }
     }
 }
 

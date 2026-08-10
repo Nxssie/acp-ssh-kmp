@@ -128,7 +128,9 @@ fun TerminalScreen(host: TerminalHost) {
             KeyButton("Ctrl+Z", Modifier.weight(1f)) { host.send(byteArrayOf(Ansi.ctrl('z'))) }
             KeyButton("Ctrl+L", Modifier.weight(1f)) { host.send(byteArrayOf(Ansi.ctrl('l'))) }
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = { host.disconnect() }) { Text("⏻") }
+            // Texto plano en vez del símbolo "⏻" (U+23FB): muchas fuentes de
+            // Android no tienen ese glifo y el botón se veía vacío.
+            TextButton(onClick = { host.disconnect() }) { Text("Salir") }
         }
 
         // Toolbar 2: navegación
