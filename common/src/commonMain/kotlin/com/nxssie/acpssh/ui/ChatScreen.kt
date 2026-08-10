@@ -307,12 +307,24 @@ private fun ChatHeader(
                 state.agentName ?: "Agente ACP",
                 style = MaterialTheme.typography.titleMedium,
             )
-            state.sessionId?.let {
-                Text(
-                    "Sesión ${it.take(8)}…",
+            when {
+                state.sessionId != null -> Text(
+                    "Sesión ${state.sessionId.take(8)}…",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // Handshake en curso (arrancar el agente remoto puede tardar varios
+                // segundos): sin esto, el header se ve igual "conectado" o "arrancando",
+                // y es fácil mandar un prompt de más antes de que la sesión esté lista.
+                state.error == null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Conectando con el agente…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
         Box {
