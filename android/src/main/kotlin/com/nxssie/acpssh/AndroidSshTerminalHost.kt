@@ -52,6 +52,15 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
         class Resize(val cols: Int, val rows: Int) : Command
     }
 
+    /**
+     * Scope propio para cerrar SSHJ: `disconnect()` llega desde el hilo main
+     * (botón "Salir", `onDestroy`) y el cierre hace I/O de red — en Android
+     * eso es NetworkOnMainThreadException (el `runCatching` lo tragaba y la
+     * conexión quedaba viva a medias). No puede usar [sessionScope], que se
+     * cancela justo antes.
+     */
+    private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private var sessionScope: CoroutineScope? = null
     private var client: SSHClient? = null
     private var shell: Session.Shell? = null
@@ -183,10 +192,14 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
         emulator.onResponse = null
         writeChannel?.close()
         writeChannel = null
-        runCatching { shell?.close() }
-        runCatching { client?.disconnect() }
+        val sh = shell
+        val ssh = client
         shell = null
         client = null
+        closeScope.launch {
+            runCatching { sh?.close() }
+            runCatching { ssh?.disconnect() }
+        }
         _connection.value = ConnectionState(ConnectStatus.DISCONNECTED)
     }
 }
