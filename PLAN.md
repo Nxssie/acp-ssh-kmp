@@ -1,287 +1,290 @@
-# Plan — Cliente Android (KMP) para ACP sobre SSH
+# Plan — Android (KMP) client for ACP over SSH
 
-> Estado: borrador inicial para que GLM lo profundice. DeepSeek ejecuta vía `pi`.
-> No hay código todavía — solo arquitectura, fases y decisiones abiertas.
+> Status: initial draft for GLM to flesh out. DeepSeek executes via `pi`.
+> No code yet — only architecture, phases, and open decisions.
 
-## Objetivo
+## Goal
 
-App Android (Kotlin Multiplatform, target Android primero) que:
-1. Abre una sesión SSH contra un host remoto.
-2. Lanza ahí un agente que hable **ACP (Agent Client Protocol)** — p. ej. `claude-code-acp`,
-   el adaptador de Gemini CLI, o cualquier binario que exponga ACP por stdio.
-3. Habla el protocolo ACP (JSON-RPC 2.0, newline-delimited) sobre los streams stdin/stdout
-   del canal `exec` de SSH.
-4. Renderiza la sesión en UI (Compose Multiplatform): chat, tool calls, diffs, permission
+Android app (Kotlin Multiplatform, Android-first target) that:
+1. Opens an SSH session against a remote host.
+2. Launches there an agent that speaks **ACP (Agent Client Protocol)** — e.g. `claude-code-acp`,
+   the Gemini CLI adapter, or any binary that exposes ACP over stdio.
+3. Speaks the ACP protocol (JSON-RPC 2.0, newline-delimited) over the stdin/stdout
+   streams of the SSH `exec` channel.
+4. Renders the session in UI (Compose Multiplatform): chat, tool calls, diffs, permission
    requests.
 
-## Por qué KMP y no Android puro
+## Why KMP and not pure Android
 
-Con target único Android, KMP añade la capa `expect`/`actual` sin beneficio real —el target
-Android ya corre sobre JVM y usa las mismas librerías. **Solo vale la pena si el plan real es
-compartir este cliente con iOS/desktop más adelante.** Si no, considerar bajar a Android nativo
-y ahorrar la capa de abstracción. → Decisión pendiente, ver "Preguntas abiertas".
+With a single Android target, KMP adds the `expect`/`actual` layer with no real benefit — the
+Android target already runs on the JVM and uses the same libraries. **It's only worth it if the
+real plan is to share this client with iOS/desktop later.** If not, consider dropping down to
+native Android and saving the abstraction layer. → Decision pending, see "Open questions".
 
-## Arquitectura en capas
+## Layered architecture
 
 ```
 UI (Compose Multiplatform)
-   │  observa StateFlow<SessionState>
+   │  observes StateFlow<SessionState>
    ▼
-ACP Client (dominio)
+ACP Client (domain)
    │  initialize / session.new / session.prompt / session.update (streaming)
-   │  serializa mensajes JSON-RPC, deserializa notificaciones
+   │  serializes JSON-RPC messages, deserializes notifications
    ▼
-Transport (interfaz) ──actual──► SSH Channel (exec) stdin/stdout como streams
+Transport (interface) ──actual──► SSH Channel (exec) stdin/stdout as streams
 ```
 
-Puntos clave:
-- El **Transport** debe ser una interfaz (`interface AcpTransport { input: Source; output: Sink }`)
-  para poder testear la capa ACP sin SSH real (mockeando con pipes locales).
-- El **framing** de ACP es NDJSON (una línea = un mensaje JSON-RPC). Cuidado con partial reads
-  del stream SSH: hay que bufferizar hasta encontrar `\n`.
-- La sesión SSH debe mantenerse viva mientras dure la sesión ACP (no es request/response, es
-  streaming bidireccional largo).
+Key points:
+- The **Transport** must be an interface (`interface AcpTransport { input: Source; output: Sink }`)
+  so the ACP layer can be tested without a real SSH connection (mocking with local pipes).
+- ACP's **framing** is NDJSON (one line = one JSON-RPC message). Watch out for partial reads
+  of the SSH stream: you need to buffer until you find `\n`.
+- The SSH session must stay alive for as long as the ACP session lasts (it's not
+  request/response, it's long-lived bidirectional streaming).
 
-## Stack propuesto
+## Proposed stack
 
-- **SSH**: SSHJ (`hierynomus/sshj`) — JVM puro, mantenido, soporta auth por key/agente/password.
-  Alternativa: Apache Mina SSHD (más pesado, más control). JSch está descartado (sin
-  mantenimiento activo).
-- **Serialización**: `kotlinx.serialization` con un `JsonRpcMessage` sellado (`Request`,
-  `Response`, `Notification`) que mapea al esquema de ACP.
-- **Concurrencia/streams**: `kotlinx.coroutines` + `kotlinx.io` (o `okio`) para leer/escribir
-  sobre los streams del canal SSH sin bloquear el hilo principal.
-- **UI**: Compose Multiplatform (Android primero).
-- **Runtime/tooling**: mise para JDK; Bun no aplica aquí (proyecto JVM/Kotlin puro).
+- **SSH**: SSHJ (`hierynomus/sshj`) — pure JVM, maintained, supports key/agent/password auth.
+  Alternative: Apache Mina SSHD (heavier, more control). JSch is ruled out (no
+  active maintenance).
+- **Serialization**: `kotlinx.serialization` with a sealed `JsonRpcMessage` (`Request`,
+  `Response`, `Notification`) that maps to the ACP schema.
+- **Concurrency/streams**: `kotlinx.coroutines` + `kotlinx.io` (or `okio`) to read/write
+  over the SSH channel's streams without blocking the main thread.
+- **UI**: Compose Multiplatform (Android-first).
+- **Runtime/tooling**: mise for the JDK; Bun doesn't apply here (pure JVM/Kotlin project).
 
-## Fases
+## Phases
 
-### Fase 0 — Esqueleto
-- Proyecto KMP con target `androidTarget()` (dejar `commonMain` listo para sumar targets luego).
-- Config de mise (`.mise.toml`) con Java 25 LTS.
-- Gradle con SSHJ + kotlinx.serialization + kotlinx.coroutines.
+### Phase 0 — Skeleton
+- KMP project with `androidTarget()` target (keep `commonMain` ready to add more targets later).
+- mise config (`.mise.toml`) with Java 25 LTS.
+- Gradle with SSHJ + kotlinx.serialization + kotlinx.coroutines.
 
-### Fase 1 — Validar SSH puro
-- Conectar a un host de prueba, autenticar (key), `exec` de un comando remoto simple
-  (`echo hola` o similar) y confirmar que se puede leer stdout por streams.
-- Sin ACP todavía. Objetivo: descartar problemas de conectividad/auth antes de meter protocolo.
+### Phase 1 — Validate plain SSH
+- Connect to a test host, authenticate (key), `exec` a simple remote command
+  (`echo hola` or similar) and confirm stdout can be read via streams.
+- No ACP yet. Goal: rule out connectivity/auth issues before adding the protocol.
 
-### Fase 2 — Framing NDJSON + eco
-- Sobre el canal `exec` (ahora apuntando al binario ACP real, ej. `claude-code-acp`), implementar
-  el lector de líneas NDJSON y el escritor de mensajes JSON-RPC.
-- Enviar `initialize` a mano, loguear la respuesta cruda. Validar que el framing no se rompe con
-  mensajes grandes (diffs largos, etc.) partidos en varios reads del socket.
+### Phase 2 — NDJSON framing + echo
+- On the `exec` channel (now pointing at the real ACP binary, e.g. `claude-code-acp`), implement
+  the NDJSON line reader and the JSON-RPC message writer.
+- Send `initialize` by hand, log the raw response. Validate that framing doesn't break with
+  large messages (long diffs, etc.) split across several socket reads.
 
-### Fase 3 — Capa ACP de dominio
-- Modelar el ciclo de vida: `initialize` → `session/new` → `session/prompt` → stream de
+### Phase 3 — ACP domain layer
+- Model the lifecycle: `initialize` → `session/new` → `session/prompt` → stream of
   `session/update` (tool_call, tool_call_update, agent_message_chunk, plan, etc.) →
-  `session/request_permission` (requiere respuesta del usuario, es bidireccional).
-- Exponer esto como un `Flow<SessionEvent>` consumible desde UI.
+  `session/request_permission` (requires a user response, it's bidirectional).
+- Expose this as a `Flow<SessionEvent>` consumable from the UI.
 
-### Fase 4 — UI mínima (chat)
-- Pantalla de conexión (host, usuario, key/agente SSH, comando remoto del agente).
-- Chat simple: prompt del usuario → stream de respuesta en texto plano (sin renderizar diffs
-  todavía, solo placeholders "[tool_call: ...]").
+### Phase 4 — Minimal UI (chat)
+- Connection screen (host, user, SSH key/agent, agent's remote command).
+- Simple chat: user prompt → plain-text response stream (not rendering diffs
+  yet, just placeholders "[tool_call: ...]").
 
-### Fase 5 — UI rica
-- Renderizado de diffs (side-by-side o unificado).
-- UI para `request_permission` (aceptar/rechazar/always-allow).
-- Indicadores de plan/steps si el agente los emite.
+### Phase 5 — Rich UI
+- Diff rendering (side-by-side or unified).
+- UI for `request_permission` (accept/reject/always-allow).
+- Plan/step indicators if the agent emits them.
 
-## Riesgos / puntos de fricción esperados
+## Expected risks / friction points
 
-- **Backpressure y cierre de canal**: si el proceso remoto muere o el SSH se cae a mitad de
-  sesión, el `Flow` de eventos debe cerrarse limpio y la UI debe poder reconectar sin duplicar
-  estado.
-- **Auth SSH en Android**: si se usa key privada, dónde se guarda (Keystore, no en claro) y cómo
-  se importa desde el usuario.
-- **Tamaño de mensajes**: diffs de archivos grandes pueden generar líneas JSON enormes; el buffer
-  de lectura NDJSON no debe asumir tamaño máximo fijo.
-- **Multiplicidad de agentes ACP**: `claude-code-acp`, Gemini CLI, etc. pueden diferir en
-  capabilities reportadas en `initialize` — el cliente debe negociar capabilities, no asumir
-  todas presentes.
+- **Backpressure and channel closure**: if the remote process dies or SSH drops mid-session,
+  the event `Flow` must close cleanly and the UI must be able to reconnect without duplicating
+  state.
+- **SSH auth on Android**: if a private key is used, where it's stored (Keystore, not in the
+  clear) and how the user imports it.
+- **Message size**: diffs of large files can produce huge JSON lines; the NDJSON read
+  buffer must not assume a fixed max size.
+- **Multiplicity of ACP agents**: `claude-code-acp`, Gemini CLI, etc. may differ in
+  capabilities reported in `initialize` — the client must negotiate capabilities, not assume
+  all are present.
 
-## Preguntas abiertas (para que GLM las resuelva/profundice)
+## Open questions (for GLM to resolve/flesh out)
 
-1. ¿Target final es solo Android, o de verdad se planea Desktop/iOS? Define si vale la pena KMP.
-2. ¿Qué agente ACP concreto se va a ejecutar en el remoto? (`claude-code-acp` vs otro) — afecta
-   el comando `exec` exacto y qué capabilities esperar.
-3. ¿Auth SSH por key, por ssh-agent forwarding, o password? Afecta el diseño de la pantalla de
-   conexión y el almacenamiento de credenciales.
-4. ¿La sesión ACP debe persistir si la app va a background (Android puede matar el proceso), o
-   se acepta reconectar cada vez?
+1. Is the final target Android only, or is Desktop/iOS really planned? This determines whether
+   KMP is worth it.
+2. Which concrete ACP agent will run on the remote? (`claude-code-acp` vs another) — affects
+   the exact `exec` command and which capabilities to expect.
+3. SSH auth by key, ssh-agent forwarding, or password? Affects the design of the
+   connection screen and how credentials are stored.
+4. Must the ACP session persist if the app goes to background (Android can kill the process),
+   or is reconnecting each time acceptable?
 
-## Estado de ejecución (2026-08-07, vía pi)
+## Execution status (2026-08-07, via pi)
 
-**Fase 0 — Esqueleto: COMPLETADA**
+**Phase 0 — Skeleton: COMPLETE**
 
-- Proyecto KMP de 3 módulos: `common` (androidTarget + jvm("desktop")), `android` (app), `desktop` (CLI + UI).
-- Versiones probadas juntas: Kotlin 2.3.20, AGP 8.9.0, Compose Multiplatform 1.10.1, Gradle 8.13, kotlinx-io 0.9.1, kotlinx-coroutines 1.11.0, kotlinx-serialization 1.11.0, SSHJ 0.40.0.
-- `.mise.toml` con Java 25.0.2 + Gradle 9.7.0. ⚠️ Gradle 8.13 (AGP 8.9) no corre sobre Java 25 (el compilador Kotlin embebido falla al parsear la versión); se ejecuta con JDK 21 (`JAVA_HOME`).
-- Capa de dominio en `commonMain`: `SshConnectionConfig`, `SshSession`/`ExecChannel` (interfaz con `Source`/`Sink` de kotlinx-io, listas para el framing NDJSON de Fase 2).
-- Implementación SSHJ en `desktopMain` (jvm): `SshjConnect` + `SshjSession`/`SshjExecChannel`. Host key verificada contra archivo `known_hosts` (secure default: sin verifier la conexión falla).
-- App Android (`:android:assembleDebug`) y UI placeholder Compose compilando (APK debug 9.1 MB).
+- 3-module KMP project: `common` (androidTarget + jvm("desktop")), `android` (app), `desktop` (CLI + UI).
+- Versions tested together: Kotlin 2.3.20, AGP 8.9.0, Compose Multiplatform 1.10.1, Gradle 8.13, kotlinx-io 0.9.1, kotlinx-coroutines 1.11.0, kotlinx-serialization 1.11.0, SSHJ 0.40.0.
+- `.mise.toml` with Java 25.0.2 + Gradle 9.7.0. ⚠️ Gradle 8.13 (AGP 8.9) doesn't run on Java 25 (the embedded Kotlin compiler fails to parse the version); it runs on JDK 21 (`JAVA_HOME`).
+- Domain layer in `commonMain`: `SshConnectionConfig`, `SshSession`/`ExecChannel` (interface with kotlinx-io `Source`/`Sink`, ready for the Phase 2 NDJSON framing).
+- SSHJ implementation in `desktopMain` (jvm): `SshjConnect` + `SshjSession`/`SshjExecChannel`. Host key verified against a `known_hosts` file (secure default: without a verifier the connection fails).
+- Android app (`:android:assembleDebug`) and placeholder Compose UI compiling (debug APK 9.1 MB).
 
-**Fase 1 — Validar SSH puro: COMPLETADA**
+**Phase 1 — Validate plain SSH: COMPLETE**
 
-- `scripts/setup-sshd.sh` levanta un sshd de prueba local (127.0.0.1:2223) con par de claves ed25519 efímero y `known_hosts`.
-- `scripts/validate-ssh.sh` ejecuta el CLI de desktop (`:desktop:run --test-ssh`) contra él. Resultados:
-  - `echo hola` → `exit=0`, `stdout=hola` (key auth ed25519 + known_hosts OK).
-  - `seq 1 200000 | tail -1` → `stdout=200000` (stream grande leído por chunks sin perder datos).
-  - `echo oops >&2 && exit 3` → `exit=3`, `stderr=oops` (exit status propagado, stderr drenado en paralelo).
-- Nota SSHJ: las claves modernas `-----BEGIN OPENSSH PRIVATE KEY-----` (ed25519) requieren `OpenSSHKeyV1KeyFile`; el clásico `OpenSSHKeyFile` cae a PKCS8 y falla. `SshjConnect.keyProvider()` elige por header.
+- `scripts/setup-sshd.sh` spins up a local test sshd (127.0.0.1:2223) with an ephemeral ed25519 key pair and `known_hosts`.
+- `scripts/validate-ssh.sh` runs the desktop CLI (`:desktop:run --test-ssh`) against it. Results:
+  - `echo hola` → `exit=0`, `stdout=hola` (ed25519 key auth + known_hosts OK).
+  - `seq 1 200000 | tail -1` → `stdout=200000` (large stream read in chunks without losing data).
+  - `echo oops >&2 && exit 3` → `exit=3`, `stderr=oops` (exit status propagated, stderr drained in parallel).
+- SSHJ note: modern `-----BEGIN OPENSSH PRIVATE KEY-----` keys (ed25519) require `OpenSSHKeyV1KeyFile`; the classic `OpenSSHKeyFile` falls back to PKCS8 and fails. `SshjConnect.keyProvider()` picks based on the header.
 
-## Siguiente paso
+## Next step
 
-GLM: profundizar Fase 2 y 3 (el framing NDJSON exacto y el modelo de datos del protocolo ACP,
-incluyendo los tipos de `session/update` que hay que soportar en v1).
-DeepSeek (vía `pi`): una vez profundizado, ejecutar Fase 2 (framing NDJSON + `initialize` a mano
-contra un binario ACP real). La Fase 2 ya puede montarse sobre `ExecChannel` sin tocar la capa SSH.
+GLM: flesh out Phase 2 and 3 (the exact NDJSON framing and the ACP protocol's data model,
+including the `session/update` variants that must be supported in v1).
+DeepSeek (via `pi`): once fleshed out, execute Phase 2 (NDJSON framing + `initialize` by hand
+against a real ACP binary). Phase 2 can already be built on top of `ExecChannel` without touching the SSH layer.
 
-## Giro de producto (2026-08-08): terminal SSH interactivo
+## Product pivot (2026-08-08): interactive SSH terminal
 
-El objetivo real del usuario es **gestionar una terminal como el setup `claude-terminal`** (SSH +
-`claude`/tmux), no un chat ACP. Se pivota a un **cliente SSH interactivo**:
+The user's actual goal is to **manage a terminal like the `claude-terminal` setup** (SSH +
+`claude`/tmux), not an ACP chat. Pivoting to an **interactive SSH client**:
 
-- **Shell con PTY** (`xterm-256color`) vía SSHJ `allocatePTY` + `startShell`, con `window-change`
-  en resize (a diferencia de `exec`, que no expone `changeWindowDimensions`).
-- **Emulador VT100/xterm propio** en `commonMain` (Kotlin puro, sin deps JVM): subconjunto
-  suficiente para TUIs (tmux, claude, vim-lite): alt screen, cursor, SGR 16/256/truecolor,
+- **PTY shell** (`xterm-256color`) via SSHJ `allocatePTY` + `startShell`, with `window-change`
+  on resize (unlike `exec`, which doesn't expose `changeWindowDimensions`).
+- **Custom VT100/xterm emulator** in `commonMain` (pure Kotlin, no JVM deps): a subset
+  sufficient for TUIs (tmux, claude, vim-lite): alt screen, cursor, SGR 16/256/truecolor,
   scroll region, save/restore cursor, wrap, DECCKM/DECAWM/DECOM, DSR/DA/CPR/window-size,
   OSC title, UTF-8.
-- **TOFU** para host keys en Android (`EncryptedSharedPreferences`); desktop usa `known_hosts`
-  o verifier promiscuo (dev).
-- **Clave privada** pegada como PEM y guardada cifrada (AndroidX Security). Sin ficheros.
+- **TOFU** for host keys on Android (`EncryptedSharedPreferences`); desktop uses `known_hosts`
+  or a promiscuous verifier (dev).
+- **Private key** pasted as PEM and stored encrypted (AndroidX Security). No files.
 
-### Arquitectura resultante
+### Resulting architecture
 
 ```
-commonMain (UI + dominio, sin deps JVM)
-  App.kt ── App(host: TerminalHost) ── estados: form / conectando / TOFU dialog / terminal
+commonMain (UI + domain, no JVM deps)
+  App.kt ── App(host: TerminalHost) ── states: form / connecting / TOFU dialog / terminal
   ui/ConnectionScreen.kt   ui/TerminalScreen.kt
-  session/TerminalHost.kt  (interfaz: connection, screen, terminal, send/resize/…)
+  session/TerminalHost.kt  (interface: connection, screen, terminal, send/resize/…)
   terminal/                TerminalEmulator + TerminalState + TerminalColors + AnsiSequences
-  SshSession.kt            + PtyShell (openShell con PTY)  · SshConnectionConfig.Auth.KeyData
+  SshSession.kt            + PtyShell (openShell with PTY)  · SshConnectionConfig.Auth.KeyData
 
-:android (app, SSHJ + streams crudos de Java)
+:android (app, SSHJ + raw Java streams)
   MainActivity  → AndroidSshTerminalHost(context)
   AndroidSshTerminalHost: SSHClient + allocatePTY + startShell; reader coroutine → emulator
-  TofuHostKeyVerifier:   huella SHA-256; primera vez → espera decisión del usuario
+  TofuHostKeyVerifier:   SHA-256 fingerprint; first time → waits for user decision
   SecureStore:          EncryptedSharedPreferences (PEM, config, hostkeys)
 
 common/desktopMain (JVM)
   jvm/SshjSession.kt     + openShell()/SshjPtyShell · KeyData · connect(knownHosts = null)
-  DesktopSshTerminalHost (App desktop reutiliza la misma UI)
+  DesktopSshTerminalHost (desktop App reuses the same UI)
 ```
 
-### Desviaciones del plan original (documentadas)
+### Deviations from the original plan (documented)
 
-1. `PtyShell` **no** recibe `command`: el comando inicial se escribe en `stdin` tras conectar
-   (así `resize` funciona siempre; un canal `exec` no expone window-change).
-2. Android host **no** usa kotlinx-io `Source`/`Sink` ni la interfaz `SshSession` común: lee el
-   `InputStream` de Java directamente (evita dudas de variante KMP de kotlinx-io en android).
-3. La barra de teclas usa **Ctrl+letra fijos** (C/D/Z/L/U/W) en vez de un "modo Ctrl" toggle:
-   más usable en móvil; las flechas/Home/End sí respetan DECCKM en tiempo de pulsación.
-4. Sin scrollback en la UI (el emulador lo acumula en `TerminalBuffer.scrollback`, listo para
-   futuro); sin soporte de ratón ni DEC Special Graphics (tmux usa UTF-8 box-drawing).
-5. Clave con passphrase no soportada (mismo límite que desktop).
+1. `PtyShell` does **not** take a `command`: the initial command is written to `stdin` after
+   connecting (this way `resize` always works; an `exec` channel doesn't expose window-change).
+2. The Android host does **not** use kotlinx-io `Source`/`Sink` nor the common `SshSession`
+   interface: it reads Java's `InputStream` directly (avoids doubts about the KMP variant of
+   kotlinx-io on Android).
+3. The key bar uses **fixed Ctrl+letter** shortcuts (C/D/Z/L/U/W) instead of a toggling "Ctrl
+   mode": more usable on mobile; the arrow keys/Home/End do respect DECCKM at keypress time.
+4. No scrollback in the UI (the emulator accumulates it in `TerminalBuffer.scrollback`, ready for
+   the future); no mouse support or DEC Special Graphics (tmux uses UTF-8 box-drawing).
+5. Passphrase-protected keys not supported (same limitation as desktop).
 
-### Smoke manual (móvil)
+### Manual smoke test (mobile)
 
-1. `:android:assembleDebug` (fuera de este flujo, una vez) → instalar `android-debug.apk`.
-2. Host/usuario de tu servidor SSH, pegar la clave ed25519, comando `tmux new -As claude-terminal`.
-3. TOFU: comparar la huella mostrada con `ssh-keyscan -t ed25519 host | ssh-keygen -lf -`.
-4. Verificar TUI de `claude` (colores, alt-screen, cursor) y flechas/Ctrl+C; rotar → tmux reflow.
-5. Desconectar/reconectar → `tmux attach` reanuda la sesión.
+1. `:android:assembleDebug` (outside this flow, once) → install `android-debug.apk`.
+2. Your SSH server's host/user, paste the ed25519 key, command `tmux new -As claude-terminal`.
+3. TOFU: compare the shown fingerprint against `ssh-keyscan -t ed25519 host | ssh-keygen -lf -`.
+4. Verify `claude`'s TUI (colors, alt-screen, cursor) and arrows/Ctrl+C; rotate → tmux reflow.
+5. Disconnect/reconnect → `tmux attach` resumes the session.
 
-### Deuda técnica pendiente
+### Pending technical debt
 
-- ACP (Fases 2–5 del plan original) queda como fase futura sobre el mismo `TerminalHost`/SSHJ.
-- ~~Import de clave por SAF (selector de archivos) en vez de pegar PEM.~~ Hecho (2026-08-09):
-  export/import de `.pem` vía SAF (Android) / `JFileChooser` (desktop), ver `io/PemFileIo.kt`.
-- Scrollback, ratón, bracketed paste (el emulador ya expone `bracketedPaste`), parpadeo de cursor.
+- ACP (Phases 2–5 of the original plan) remains a future phase on top of the same `TerminalHost`/SSHJ.
+- ~~Import a key via SAF (file picker) instead of pasting PEM.~~ Done (2026-08-09):
+  export/import of `.pem` via SAF (Android) / `JFileChooser` (desktop), see `io/PemFileIo.kt`.
+- Scrollback, mouse, bracketed paste (the emulator already exposes `bracketedPaste`), cursor blinking.
 
-## Retomar ACP — plan de modo chat (2026-08-09, borrador)
+## Resuming ACP — chat mode plan (2026-08-09, draft)
 
-> Estado: planificado, sin código. Decisiones cerradas con el usuario antes de escribir esto:
-> agente = `claude-code-acp`; UI = terminal actual **y** chat nuevo, seleccionable (no reemplaza
-> nada); persistencia de sesión ACP desde el v1 (sobrevive a que Android mate el proceso en
-> background / reconexión de red).
+> Status: planned, no code. Decisions closed with the user before writing this:
+> agent = `claude-code-acp`; UI = current terminal **and** a new chat, selectable (it doesn't
+> replace anything); ACP session persistence from v1 (survives Android killing the process in
+> background / network reconnection).
 
-### Por qué no es un ajuste de estilos
+### Why this isn't a styling tweak
 
-Lo que hoy se ve al conectar (`tmux new -As claude-terminal`) es la CLI `claude` interactiva
-renderizada carácter a carácter por el emulador VT100 propio. Una "UI tipo chat" real necesita que
-el remoto hable **ACP (JSON-RPC 2.0 sobre NDJSON)** en vez de imprimir una TUI — son dos protocolos
-de transporte distintos, no una cuestión de estilos de `TerminalScreen`. Implica reactivar las
-Fases 2–5 del plan original, ahora sobre el código que existe tras el pivote a terminal.
+What's shown today upon connecting (`tmux new -As claude-terminal`) is the interactive `claude`
+CLI rendered character by character by the custom VT100 emulator. A real "chat-style UI" needs
+the remote to speak **ACP (JSON-RPC 2.0 over NDJSON)** instead of printing a TUI — these are two
+different transport protocols, not a matter of `TerminalScreen` styles. This means reactivating
+Phases 2–5 of the original plan, now on top of the code that exists after the pivot to terminal.
 
-### Qué se reutiliza tal cual
+### What's reused as-is
 
-- Conexión SSH, TOFU (Android) / `known_hosts` (desktop), `SecureStore`, generación e import/export
-  de clave: todo eso vive en la capa de auth/config, independiente del canal que se abra después.
-- `TerminalConfig` (host/puerto/usuario/clave) se reutiliza; el campo `remoteCommand` pasa a ser el
-  comando de arranque del agente ACP en vez de un shell.
+- SSH connection, TOFU (Android) / `known_hosts` (desktop), `SecureStore`, key generation and
+  import/export: all of this lives in the auth/config layer, independent of the channel opened
+  afterward.
+- `TerminalConfig` (host/port/user/key) is reused; the `remoteCommand` field becomes the
+  startup command for the ACP agent instead of a shell.
 
-### Qué falta / hay que construir
+### What's missing / needs to be built
 
-**1. Canal `exec` real en Android** — hoy `AndroidSshTerminalHost` solo hace
-`allocatePTY`+`startShell` (ver `AndroidSshTerminalHost.kt:78-80`); nunca abre un `exec` sin PTY.
-ACP necesita pipes crudos, sin pty (un pty puede cambiar el buffering/salida del binario ACP,
-que espera stdio plano). Hay que añadir esa capacidad en paralelo a la del shell.
+**1. Real `exec` channel on Android** — today `AndroidSshTerminalHost` only does
+`allocatePTY`+`startShell` (see `AndroidSshTerminalHost.kt:78-80`); it never opens a PTY-less
+`exec`. ACP needs raw pipes, no pty (a pty can change the buffering/output of the ACP binary,
+which expects plain stdio). This capability needs to be added alongside the shell one.
 
-**2. `RawByteChannel` en `commonMain`** — abstracción mínima común a Android (que usa
-`java.io.InputStream`/`OutputStream` crudos) y desktop (que usa `kotlinx.io Source/Sink` vía
-`SshSession.exec()`, ya definido en `SshSession.kt:12` pero sin usar todavía):
+**2. `RawByteChannel` in `commonMain`** — minimal abstraction common to Android (which uses
+raw `java.io.InputStream`/`OutputStream`) and desktop (which uses `kotlinx.io Source/Sink` via
+`SshSession.exec()`, already defined in `SshSession.kt:12` but not used yet):
 
 ```kotlin
 interface RawByteChannel {
-    suspend fun readChunk(buffer: ByteArray): Int  // -1 = EOF, como InputStream.read
+    suspend fun readChunk(buffer: ByteArray): Int  // -1 = EOF, like InputStream.read
     suspend fun write(bytes: ByteArray)
     fun close()
 }
 ```
 
-**3. `NdjsonFramer` en `commonMain`** (Kotlin puro, sin deps JVM) — bufferiza sobre un
-`RawByteChannel` y expone `Flow<String>` de líneas completas + `writeMessage(json: String)`.
-Testeable en `commonTest` con un `RawByteChannel` fake y reads partidos a mitad de línea (el mismo
-caso límite que ya señalaba el plan original en Fase 2).
+**3. `NdjsonFramer` in `commonMain`** (pure Kotlin, no JVM deps) — buffers on top of a
+`RawByteChannel` and exposes a `Flow<String>` of complete lines + `writeMessage(json: String)`.
+Testable in `commonTest` with a fake `RawByteChannel` and reads split mid-line (the same edge
+case already flagged in the original plan's Phase 2).
 
-**4. Persistencia del proceso remoto — recomendación: NO usar tmux/dtach clásicos.**
-Ambos crean una pty, y una pty puede hacer que `claude-code-acp` cambie de modo de salida
-(muchas CLIs detectan TTY y dejan de emitir NDJSON limpio). Alternativa más segura y que cumple
-igual el requisito de "sobrevive a reconexión":
+**4. Persistence of the remote process — recommendation: do NOT use classic tmux/dtach.**
+Both create a pty, and a pty can make `claude-code-acp` switch its output mode
+(many CLIs detect a TTY and stop emitting clean NDJSON). A safer alternative that equally
+satisfies the "survives reconnection" requirement:
 
 ```bash
 mkfifo /tmp/acp-in /tmp/acp-out /tmp/acp-err
 setsid nohup claude-code-acp <\ /tmp/acp-in >\ /tmp/acp-out 2>\ /tmp/acp-err &
 ```
 
-El cliente abre dos canales `exec` (mismo host, misma conexión SSH multiplexada): uno hace
-`cat >> /tmp/acp-in` para escribir, otro `cat /tmp/acp-out` para leer. Si el cliente se desconecta,
-el proceso remoto sigue vivo (desacoplado de la sesión SSH por `setsid`); si el FIFO se llena
-porque nadie está leyendo, el agente simplemente bloquea hasta que alguien reconecte y vuelva a
-leer — no se pierden mensajes, solo se pausan. Si el usuario prefiere tmux por uniformidad con
-`claude-terminal`, es una alternativa válida pero **hay que validar primero** que
-`claude-code-acp` no cambia de comportamiento bajo pty antes de comprometerse a esa vía.
+The client opens two `exec` channels (same host, same multiplexed SSH connection): one runs
+`cat >> /tmp/acp-in` to write, another `cat /tmp/acp-out` to read. If the client disconnects,
+the remote process stays alive (decoupled from the SSH session by `setsid`); if the FIFO fills up
+because no one is reading, the agent simply blocks until someone reconnects and reads again — no
+messages are lost, they're just paused. If the user prefers tmux for consistency with
+`claude-terminal`, it's a valid alternative but **it must first be validated** that
+`claude-code-acp` doesn't change behavior under a pty before committing to that route.
 
-**5. Modelo de dominio ACP** (`commonMain`, `kotlinx.serialization`):
-- Tipos JSON-RPC 2.0 genéricos (`Request`/`Response`/`Notification`), detectando el tipo de mensaje
-  entrante por presencia de `id`/`method` (una notificación no tiene `id`; una respuesta no tiene
-  `method`; un request entrante del agente —p. ej. `session/request_permission`— tiene ambos).
-- `AcpClient`: `initialize()`, `session/new`, `session/prompt`, despacho de `session/update`
-  (stream) y manejo de requests entrantes que exigen respuesta del cliente.
-- ⚠️ El esquema exacto (`SessionUpdate` y sus variantes, forma de `initialize`/capabilities) **no
-  está verificado contra `claude-code-acp` real** — antes de fijar tipos, correr el binario a mano
-  contra el framer de la Fase A y loguear los mensajes crudos, igual que hizo el plan original en
-  su Fase 2 ("enviar `initialize` a mano, loguear la respuesta cruda").
+**5. ACP domain model** (`commonMain`, `kotlinx.serialization`):
+- Generic JSON-RPC 2.0 types (`Request`/`Response`/`Notification`), detecting the incoming
+  message type by the presence of `id`/`method` (a notification has no `id`; a response has no
+  `method`; an incoming request from the agent — e.g. `session/request_permission` — has both).
+- `AcpClient`: `initialize()`, `session/new`, `session/prompt`, dispatch of `session/update`
+  (stream) and handling of incoming requests that require a client response.
+- ⚠️ The exact schema (`SessionUpdate` and its variants, the shape of `initialize`/capabilities)
+  **is not verified against the real `claude-code-acp`** — before locking down types, run the
+  binary by hand against the Phase A framer and log the raw messages, just like the original
+  plan did in its Phase 2 ("send `initialize` by hand, log the raw response").
 
-**6. `AcpHost` — nueva interfaz hermana de `TerminalHost`** (no lo reemplaza):
+**6. `AcpHost` — new interface, sibling of `TerminalHost`** (doesn't replace it):
 
 ```kotlin
 interface AcpHost {
-    val connection: StateFlow<ConnectionState>   // reutiliza los mismos estados (TOFU, error…)
-    val session: StateFlow<AcpSessionState>      // mensajes, tool calls, plan, permission pendiente
+    val connection: StateFlow<ConnectionState>   // reuses the same states (TOFU, error…)
+    val session: StateFlow<AcpSessionState>      // messages, tool calls, plan, pending permission
     fun connect(config: TerminalConfig)
     fun sendPrompt(text: String)
     fun respondPermission(requestId: String, outcome: PermissionOutcome)
@@ -289,334 +292,335 @@ interface AcpHost {
 }
 ```
 
-`App.kt` necesita un selector de modo (Terminal | Chat) en `ConnectionScreen` que decide qué host
-construir y qué pantalla montar al conectar (`TerminalScreen` vs `ChatScreen` nuevo).
+`App.kt` needs a mode selector (Terminal | Chat) in `ConnectionScreen` that decides which host
+to build and which screen to mount upon connecting (`TerminalScreen` vs the new `ChatScreen`).
 
-**7. `ChatScreen.kt`** (`commonMain`, v1): burbujas usuario/agente, texto en streaming (append al
-último chunk), tarjetas de tool-call simples (nombre + estado: pendiente/en curso/hecho/error, sin
-diff todavía), input + enviar, modal Allow/Reject/Always-allow para `session/request_permission`.
-Diffs, plan/steps detallado y markdown enriquecido quedan para una fase posterior (Fase E).
+**7. `ChatScreen.kt`** (`commonMain`, v1): user/agent bubbles, streaming text (appending to the
+last chunk), simple tool-call cards (name + status: pending/in-progress/done/error, no diff yet),
+input + send, Allow/Reject/Always-allow modal for `session/request_permission`.
+Diffs, detailed plan/steps, and rich markdown are left for a later phase (Phase E).
 
-### Fases de ejecución
+### Execution phases
 
-| Fase | Contenido | Depende de decisiones pendientes |
+| Phase | Content | Depends on pending decisions |
 |------|-----------|-----------------------------------|
-| A | `exec` real en Android + `RawByteChannel` + `NdjsonFramer` (+ tests commonTest) | No — se puede empezar ya |
-| B | Arranque persistente remoto (FIFOs+`setsid`, o tmux/dtach si se valida antes) | No |
-| C | Modelo de dominio ACP (`AcpClient`) contra `claude-code-acp` real | Sí — requiere el binario instalado en el servidor de prueba |
-| D | `AcpHost` + selector de modo + `ChatScreen` v1 | Depende de C |
-| E | Diffs, plan rico, tool-calls expandibles, markdown | Depende de D |
+| A | Real `exec` on Android + `RawByteChannel` + `NdjsonFramer` (+ commonTest tests) | No — can start now |
+| B | Persistent remote startup (FIFOs+`setsid`, or tmux/dtach if validated first) | No |
+| C | ACP domain model (`AcpClient`) against the real `claude-code-acp` | Yes — requires the binary installed on the test server |
+| D | `AcpHost` + mode selector + `ChatScreen` v1 | Depends on C |
+| E | Diffs, rich plan, expandable tool-calls, markdown | Depends on D |
 
-### Riesgos
+### Risks
 
-- Esquema ACP no verificado (ver punto 5) — no comprometerse a tipos de datos hasta correr el
-  binario real.
-- Pty vs pipes en la persistencia (ver punto 4) — validar antes de asumir tmux funciona igual que
-  con una CLI interactiva normal.
-- Duplicación de lógica de conexión/TOFU entre `AndroidSshTerminalHost` (terminal) y el futuro host
-  ACP para Android — evaluar extraer lo común (connect + TOFU + SecureStore) en Fase C/D en vez de
-  copiar la clase.
-- Multiplicidad de agentes ACP a futuro (Gemini CLI, etc.) — capabilities de `initialize` pueden
-  diferir; no asumir todas presentes si algún día se soporta más de uno.
+- Unverified ACP schema (see item 5) — don't commit to data types until the real binary is run.
+- Pty vs pipes for persistence (see item 4) — validate before assuming tmux works the same as
+  with a normal interactive CLI.
+- Duplication of connection/TOFU logic between `AndroidSshTerminalHost` (terminal) and the future
+  ACP host for Android — consider extracting the common parts (connect + TOFU + SecureStore) in
+  Phase C/D instead of copying the class.
+- Future multiplicity of ACP agents (Gemini CLI, etc.) — `initialize` capabilities may differ;
+  don't assume all are present if more than one is ever supported.
 
-### Siguiente paso concreto
+### Concrete next step
 
-Fase A no depende de nada pendiente — es el punto de partida natural cuando se retome esto.
+Phase A depends on nothing pending — it's the natural starting point when this is resumed.
 
-## Fase A — Transporte NDJSON: COMPLETADA (2026-08-09)
+## Phase A — NDJSON transport: COMPLETE (2026-08-09)
 
-**Contenido:** canal `exec` sin PTY + framing NDJSON, común a Android y desktop. Sin tocar UI,
-selector de modo, `AcpHost` ni tipos ACP (Fases B–E siguen bloqueadas por el binario real).
+**Content:** PTY-less `exec` channel + NDJSON framing, common to Android and desktop. No touching
+UI, mode selector, `AcpHost`, or ACP types (Phases B–E remain blocked by the real binary).
 
-- `commonMain` `acp/RawByteChannel.kt`: interfaz de bytes bidireccional (`readChunk` con -1=EOF,
-  `write`, `flush`), pura common sin kotlinx.io ni `expect/actual`.
-- `commonMain` `acp/NdjsonFramer.kt`: `lines(): Flow<String>` bufferizando hasta `\n`, buffer
-  con crecimiento por duplicación (sin tamaño máximo de línea), decode UTF-8 solo en límites de
-  línea (un char partido entre reads queda íntegro), `\r\n` normalizado, línea parcial emitida en
-  EOF; `writeLine()` escribe línea+`\n` y hace flush.
-- `commonTest` `acp/NdjsonFramerTest.kt`: 12 tests con `FakeRawChannel` (chunks partidos, bytes de
-  a uno, nueva línea a mitad de chunk, línea de 300KB, `\r\n`, UTF-8 entre reads, EOF sin datos,
-  writes). Vía `:common:desktopTest`.
-- `desktopMain` `acp/RawByteChannels.kt`: `ExecChannel.asRawByteChannel()` — bridge del `exec`
-  kotlinx.io existente (`SshSession.exec()`, sin tocar plomería SSH). Drena `stderr` en una
-  coroutine aparte (`SupervisorJob` cancelado en `close()`) para no bloquear el canal si el
-  remoto escribe ahí.
-- `:android` `acp/SshjExecRawChannel.kt`: `exec` sin PTY sobre los streams crudos de SSHJ
-  (`Session.Command` + `Dispatchers.IO`), los pipes planos que espera ACP. Mismo drenado de
-  `stderr` en background que el bridge desktop.
-- `AndroidSshTerminalHost.openExec(command)`: expone el canal sobre el cliente ya autenticado
-  (stopgap: hoy requiere `connect()` de shell; Fase D refactorizará a un host exec-only); cierra
-  la sesión si `exec()` falla.
+- `commonMain` `acp/RawByteChannel.kt`: bidirectional byte interface (`readChunk` with -1=EOF,
+  `write`, `flush`), pure common with no kotlinx.io or `expect/actual`.
+- `commonMain` `acp/NdjsonFramer.kt`: `lines(): Flow<String>` buffering up to `\n`, buffer
+  growing by doubling (no max line size), UTF-8 decoding only at line boundaries (a char split
+  across reads stays intact), `\r\n` normalized, partial line emitted on EOF; `writeLine()`
+  writes line+`\n` and flushes.
+- `commonTest` `acp/NdjsonFramerTest.kt`: 12 tests with `FakeRawChannel` (split chunks, byte-by-
+  byte, newline mid-chunk, a 300KB line, `\r\n`, UTF-8 split across reads, EOF with no data,
+  writes). Via `:common:desktopTest`.
+- `desktopMain` `acp/RawByteChannels.kt`: `ExecChannel.asRawByteChannel()` — bridge for the
+  existing kotlinx.io `exec` (`SshSession.exec()`, without touching the SSH plumbing). Drains
+  `stderr` in a separate coroutine (`SupervisorJob` cancelled on `close()`) so as not to block the
+  channel if the remote writes there.
+- `:android` `acp/SshjExecRawChannel.kt`: PTY-less `exec` over SSHJ's raw streams
+  (`Session.Command` + `Dispatchers.IO`), the plain pipes ACP expects. Same background `stderr`
+  draining as the desktop bridge.
+- `AndroidSshTerminalHost.openExec(command)`: exposes the channel over the already-authenticated
+  client (stopgap: today requires a shell `connect()`; Phase D will refactor into an exec-only
+  host); closes the session if `exec()` fails.
 
-**Verificación:** compilado + tests corriendo fuera de gradle (sandbox sin JDK/SDK): Kotlin 2.4.10,
-coroutines 1.11.0, kotlinx-io 0.9.1, sshj 0.40.0 — 12/12 tests OK; el adaptador Android y el
-bridge desktop compilan contra las mismas versiones. Falta correr `:common:desktopTest` +
-`:android:assembleDebug` en la máquina con SDK (ver Fase A del plan de ejecución).
+**Verification:** compiled + tests running outside gradle (sandbox without JDK/SDK): Kotlin 2.4.10,
+coroutines 1.11.0, kotlinx-io 0.9.1, sshj 0.40.0 — 12/12 tests OK; the Android adapter and the
+desktop bridge compile against the same versions. Still need to run `:common:desktopTest` +
+`:android:assembleDebug` on a machine with the SDK (see Phase A of the execution plan).
 
-## Fase B — Arranque persistente remoto: COMPLETADA (2026-08-10)
+## Phase B — Persistent remote startup: COMPLETE (2026-08-10)
 
-**Contenido:** el snippet de FIFOs+`setsid` que proponía el plan original (§4) tenía un bug de
-diseño que se detectó y arregló **antes** de escribir Kotlin, reproduciéndolo a mano en shell
-(sin SSH de por medio, solo para aislar la mecánica de FIFOs):
+**Content:** the FIFOs+`setsid` snippet proposed by the original plan (§4) had a design bug that
+was detected and fixed **before** writing Kotlin, reproducing it by hand in shell (with no SSH
+involved, just to isolate the FIFO mechanics):
 
-- **Bug encontrado:** abrir un FIFO en modo lectura o escritura bloquea el `open()` hasta que
-  aparece el extremo contrario; y si el único lector/escritor externo se desconecta, el otro lado
-  recibe EOF (lecturas) o EPIPE/SIGPIPE (escrituras) — el snippet original mataba al agente en el
-  primer reconnect, justo lo opuesto al objetivo de "sobrevive a reconexión".
-- **Fix validado:** mantener un fd propio `<>` (lectura+escritura) sobre cada FIFO durante toda la
-  vida del agente, heredado a través del `exec` final hacia el binario (no se cierra salvo que el
-  agente cierre explícitamente todos los fds heredados, poco común en una CLI en foreground). Con
-  eso el conteo de lectores/escritores del FIFO nunca llega a cero: un cliente que se desconecta
-  solo causa bloqueo (backpressure), nunca pérdida de datos ni muerte del proceso. Confirmado en
-  shell puro: desconexión sin pérdida de mensajes, 3000 líneas encoladas sin lector (backpressure,
-  sin crash), relanzamiento idempotente (`ALREADY_RUNNING` si el pid vive) y recuperación tras
-  matar el proceso (pidfile stale detectado, FIFOs recreados, nuevo pid).
-- `stderr` va a un archivo normal (`acp-err.log`), no a un tercer FIFO: un FIFO de error sin
-  lector bloquearía el `open()` de redirección antes de poder ejecutar el agente — desviación
-  deliberada del snippet original del plan.
+- **Bug found:** opening a FIFO for reading or writing blocks `open()` until the opposite end
+  appears; and if the only external reader/writer disconnects, the other side gets EOF (reads)
+  or EPIPE/SIGPIPE (writes) — the original snippet killed the agent on the very first reconnect,
+  the exact opposite of the "survives reconnection" goal.
+- **Validated fix:** keep an own `<>` (read+write) fd on each FIFO for the entire life of the
+  agent, inherited through the final `exec` into the binary (it's not closed unless the agent
+  explicitly closes all inherited fds, uncommon in a foreground CLI). This way the FIFO's
+  reader/writer count never reaches zero: a disconnecting client only causes blocking
+  (backpressure), never data loss or process death. Confirmed in plain shell: disconnection with
+  no message loss, 3000 lines queued with no reader (backpressure, no crash), idempotent
+  relaunch (`ALREADY_RUNNING` if the pid is alive) and recovery after killing the process (stale
+  pidfile detected, FIFOs recreated, new pid).
+- `stderr` goes to a normal file (`acp-err.log`), not a third FIFO: an error FIFO with no reader
+  would block the redirection `open()` before the agent could even run — a deliberate deviation
+  from the original plan's snippet.
 
-**Código:**
-- `commonMain` `acp/RemoteAcpProcess.kt`: `launchScript(runDir, agentCommand)` (idempotente vía
+**Code:**
+- `commonMain` `acp/RemoteAcpProcess.kt`: `launchScript(runDir, agentCommand)` (idempotent via
   pidfile + `kill -0`), `readerCommand`/`writerCommand` (`cat acp-out` / `cat >> acp-in`),
-  `shellQuote` (POSIX, comillas simples). Los valores dinámicos (`runDir`, `agentCommand`) solo se
-  interpolan en la asignación de variables shell de cabecera; el bloque `setsid sh -c '...'` es
-  texto estático, así que ninguna comilla que meta el usuario puede rompernos ese bloque
-  (verificado en `commonTest`).
-- `commonMain` `acp/DuplexRawByteChannel.kt`: combina un `RawByteChannel` de solo lectura y otro de
-  solo escritura (dos `exec` SSH independientes) en un `RawByteChannel` bidireccional para el
-  `NdjsonFramer` de la Fase A.
-- `commonTest`: `RemoteAcpProcessTest.kt` (quoting, estructura del script, aislamiento del bloque
-  interno) + `DuplexRawByteChannelTest.kt` (routing read/write/flush/close). Vía `:common:desktopTest`.
-- `desktop` `Main.kt --test-acp-persist`: reproduce el escenario completo contra el sshd de
-  prueba — arranca el agente (un bucle de shell que hace eco, ya que `claude-code-acp` no está
-  instalado en el sshd de prueba), round-trip NDJSON, cierra ambos canales `exec` (desconexión),
-  reabre canales frescos y confirma el segundo round-trip sin pérdida. `scripts/validate-acp-persist.sh`
-  es el wrapper, igual que `validate-ssh.sh` de la Fase 1.
-- Sin cambios en `AndroidSshTerminalHost`/`DesktopSshTerminalHost`: `openExec`/`session.exec()` de
-  la Fase A ya bastan para abrir los canales reader/writer, no hace falta plomería nueva por host.
+  `shellQuote` (POSIX, single quotes). Dynamic values (`runDir`, `agentCommand`) are only
+  interpolated into the header's shell variable assignments; the `setsid sh -c '...'` block is
+  static text, so no quote character the user might supply can break that block (verified in
+  `commonTest`).
+- `commonMain` `acp/DuplexRawByteChannel.kt`: combines a read-only `RawByteChannel` and a write-
+  only one (two independent SSH `exec` channels) into a bidirectional `RawByteChannel` for the
+  Phase A `NdjsonFramer`.
+- `commonTest`: `RemoteAcpProcessTest.kt` (quoting, script structure, isolation of the inner
+  block) + `DuplexRawByteChannelTest.kt` (read/write/flush/close routing). Via `:common:desktopTest`.
+- `desktop` `Main.kt --test-acp-persist`: reproduces the full scenario against the test sshd —
+  starts the agent (a shell loop that echoes, since `claude-code-acp` is not installed on the
+  test sshd), NDJSON round-trip, closes both `exec` channels (disconnection), reopens fresh
+  channels and confirms the second round-trip with no loss. `scripts/validate-acp-persist.sh` is
+  the wrapper, just like `validate-ssh.sh` in Phase 1.
+- No changes to `AndroidSshTerminalHost`/`DesktopSshTerminalHost`: Phase A's `openExec`/
+  `session.exec()` already suffice to open the reader/writer channels, no new per-host plumbing
+  needed.
 
-**Verificación:** la mecánica de FIFOs+`setsid` se ejecutó y confirmó en shell real (ver arriba).
-El código Kotlin (`RemoteAcpProcess`, `DuplexRawByteChannel`, `Main.kt`) se revisó a mano con
-mucho cuidado (incluyendo los casos de escape de `$` en plantillas de string de Kotlin, que
-causaron dos bugs de compilación reales detectados y corregidos antes de continuar) pero **no se
-compiló ni se corrió `--test-acp-persist` contra el sshd real**: este sandbox no tiene JDK/SDK en
-absoluto (ni siquiera el `kotlinc` suelto que permitió verificar la Fase A fuera de gradle). Falta
-como siguiente paso, en la máquina con SDK: `./gradlew :common:desktopTest` y
-`scripts/validate-acp-persist.sh` contra el sshd de prueba (`scripts/setup-sshd.sh`).
+**Verification:** the FIFOs+`setsid` mechanics were run and confirmed in real shell (see above).
+The Kotlin code (`RemoteAcpProcess`, `DuplexRawByteChannel`, `Main.kt`) was carefully reviewed by
+hand (including the `$` escaping cases in Kotlin string templates, which caused two real
+compilation bugs that were detected and fixed before continuing) but **it was not compiled or run
+with `--test-acp-persist` against the real sshd**: this sandbox has no JDK/SDK at all (not even
+the standalone `kotlinc` that allowed verifying Phase A outside gradle). Still pending as the next
+step, on the machine with the SDK: `./gradlew :common:desktopTest` and
+`scripts/validate-acp-persist.sh` against the test sshd (`scripts/setup-sshd.sh`).
 
-## Fase C — Modelo de dominio ACP (cliente): COMPLETADA (2026-08-10)
+## Phase C — ACP domain model (client): COMPLETE (2026-08-10)
 
-**Contenido:** la capa de protocolo completa, validada contra el spec v1 del
-repositorio `agentclientprotocol/agent-client-protocol` (fuente Rust autoritativa)
-Y contra el adaptador real **`@agentclientprotocol/claude-agent-acp` 0.66.0**
-corrido en este entorno (responde `initialize`/`session/new` sin API key), no solo
-contra fixtures sintéticos:
+**Content:** the full protocol layer, validated against the v1 spec of the
+`agentclientprotocol/agent-client-protocol` repository (authoritative Rust source)
+AND against the real **`@agentclientprotocol/claude-agent-acp` 0.66.0** adapter
+run in this environment (it responds to `initialize`/`session/new` without an API key), not just
+against synthetic fixtures:
 
-- **Validación empírica previa a escribir tipos:** el adaptador real se ejecutó a
-  mano (probe Node sobre stdio) y se capturaron los mensajes crudos — `initialize`
-  response, `session/new` response, `session/update` con `available_commands_update`,
-  error de `session/prompt` con sesión inexistente, y la llegada **desordenada** de
-  respuestas (el adaptador respondió el `session/prompt` antes que el `session/new`).
-  El esquema v1 (tags `sessionUpdate` en snake_case, `ContentBlock`, `ToolCall`,
-  `ToolCallUpdate` con campos aplanados, `Plan`, `PermissionOption`/`outcome`) se
-  contrastó contra el código fuente Rust del spec (descargado de GitHub).
-- `commonMain` `acp/AcpProtocol.kt`: instancia `Json` compartida (ignoreUnknownKeys +
-  coerceInputValues + explicitNulls=false + **encodeDefaults=true** — sin esto los
-  params se serializaban como `{}`), `parseRpc` (detección de tipo por la forma:
-  notificación sin id / request entrante con método+id / respuesta con id), `RpcOut`
-  (builders de request/notification/response/error), `AcpPrettyJson`.
-- `commonMain` `acp/AcpTypes.kt`: DTOs de salida (`InitializeParams` con
+- **Empirical validation before writing types:** the real adapter was run by hand
+  (a Node probe over stdio) and the raw messages were captured — `initialize`
+  response, `session/new` response, `session/update` with `available_commands_update`,
+  a `session/prompt` error with a nonexistent session, and the arrival of responses
+  **out of order** (the adapter responded to `session/prompt` before `session/new`).
+  The v1 schema (snake_case `sessionUpdate` tags, `ContentBlock`, `ToolCall`,
+  `ToolCallUpdate` with flattened fields, `Plan`, `PermissionOption`/`outcome`) was
+  cross-checked against the spec's Rust source code (downloaded from GitHub).
+- `commonMain` `acp/AcpProtocol.kt`: shared `Json` instance (ignoreUnknownKeys +
+  coerceInputValues + explicitNulls=false + **encodeDefaults=true** — without this the
+  params were serialized as `{}`), `parseRpc` (type detection by shape:
+  notification with no id / incoming request with method+id / response with id), `RpcOut`
+  (request/notification/response/error builders), `AcpPrettyJson`.
+- `commonMain` `acp/AcpTypes.kt`: outgoing DTOs (`InitializeParams` with
   `clientInfo:{name,version}`, `NewSessionParams`, `PromptParams`, `SessionIdParams`,
-  `PermissionOutcome.Selected/Cancelled`) y decodificadores lenient de entrada
-  (`SessionUpdate` sellado decodificado a mano con tag desconocido → `Unknown(raw)`,
-  `ContentChunk`, `AcpToolCall`, `AcpToolCallUpdate`, `ToolCallContent` con `Diff`,
+  `PermissionOutcome.Selected/Cancelled`) and lenient incoming decoders
+  (`SessionUpdate` sealed, decoded by hand with an unknown tag → `Unknown(raw)`,
+  `ContentChunk`, `AcpToolCall`, `AcpToolCallUpdate`, `ToolCallContent` with `Diff`,
   `AcpPlan`/`PlanEntry`, `PermissionRequest`).
-- `commonMain` `acp/AcpClient.kt`: hilo de lectura único (resuelve `CompletableDeferred`
-  por id — tolera respuestas desordenadas, confirmado contra el adaptador real),
-  notificaciones → `Channel<SessionUpdate>`, requests entrantes →
-  `Channel<PermissionRequest>` (el host responde), métodos desconocidos → error
-  JSON-RPC -32601 (evita que el agente se cuelgue esperando respuesta), `initialize`/
-  `newSession`/`prompt` (el error de prompt se devuelve en el resultado, no lanza),
-  `cancel` (notificación), `onEof` para desconexión limpia.
-- `commonMain` `acp/AcpExecTransport.kt`: interfaz `exec`-only por plataforma +
-  `readAllToString` (lectura hasta EOF para comandos cortos).
-- `commonMain` `session/AcpSession.kt`: orquestación compartida — arranque del agente
-  remoto (Fase B, idempotente), `pwd` remoto como cwd por defecto, reader/writer
+- `commonMain` `acp/AcpClient.kt`: single reader thread (resolves `CompletableDeferred`
+  by id — tolerates out-of-order responses, confirmed against the real adapter),
+  notifications → `Channel<SessionUpdate>`, incoming requests →
+  `Channel<PermissionRequest>` (the host responds), unknown methods → JSON-RPC
+  error -32601 (prevents the agent from hanging while waiting for a response), `initialize`/
+  `newSession`/`prompt` (a prompt error is returned in the result, not thrown),
+  `cancel` (notification), `onEof` for clean disconnection.
+- `commonMain` `acp/AcpExecTransport.kt`: per-platform `exec`-only interface +
+  `readAllToString` (read to EOF for short commands).
+- `commonMain` `session/AcpSession.kt`: shared orchestration — starting the remote
+  agent (Phase B, idempotent), remote `pwd` as the default cwd, reader/writer
   `exec` → `DuplexRawByteChannel` → `NdjsonFramer` → `AcpClient`, `initialize` +
   `session/new`.
-- `commonMain` `session/AcpSessionState.kt`: reducer puro (`AcpSessionStore`) de la
-  sesión de chat — burbujas (agente/pensamiento/usuario, agrupadas por messageId),
-  tool calls (merge por id con diffs/input/output), plan (reemplazo completo), permiso
-  pendiente, busy, error. Sin dependencias de UI ni transporte.
-- `commonTest` (nuevas): `AcpProtocolTest` (detección + builders), `AcpClientTest`
-  (handshake completo, prompt con updates intercaladas y respuestas desordenadas,
-  permiso entrante + respuesta, error de prompt, método desconocido, cancel — con
-  canal fake por cola que el test rellena en el momento del "agente"), `SessionUpdateTest`
-  (shapes reales capturados + sintéticos, tags snake_case, unknown preservado),
-  `AcpSessionStoreTest` (reducer). `MarkdownTest` y `UnifiedDiffTest` en la Fase E.
+- `commonMain` `session/AcpSessionState.kt`: pure reducer (`AcpSessionStore`) for the
+  chat session — bubbles (agent/thinking/user, grouped by messageId),
+  tool calls (merged by id with diffs/input/output), plan (full replacement), pending
+  permission, busy, error. No UI or transport dependencies.
+- `commonTest` (new): `AcpProtocolTest` (detection + builders), `AcpClientTest`
+  (full handshake, prompt with interleaved updates and out-of-order responses,
+  incoming permission + response, prompt error, unknown method, cancel — with a
+  queue-based fake channel that the test fills in place of the "agent"), `SessionUpdateTest`
+  (real captured shapes + synthetic ones, snake_case tags, unknown preserved),
+  `AcpSessionStoreTest` (reducer). `MarkdownTest` and `UnifiedDiffTest` are in Phase E.
 
-**Verificación:** compilado completo fuera de gradle (JDK 21 + kotlinc 2.4.10 +
-plugins serialization/compose, jars de kotlinx/sshj/compose descargados de Maven
-Central) y **76/76 tests en verde**. El request de `initialize` generado por el
-cliente se verificó contra el adaptador real (responde protocolVersion 1 + agentInfo).
+**Verification:** fully compiled outside gradle (JDK 21 + kotlinc 2.4.10 +
+serialization/compose plugins, kotlinx/sshj/compose jars downloaded from Maven
+Central) and **76/76 tests green**. The `initialize` request generated by the
+client was verified against the real adapter (it responds with protocolVersion 1 + agentInfo).
 
-## Fase D — Host ACP + selector de modo + ChatScreen: COMPLETADA (2026-08-10)
+## Phase D — ACP Host + mode selector + ChatScreen: COMPLETE (2026-08-10)
 
-**Contenido:**
+**Content:**
 
-- `commonMain` `session/AcpHost.kt`: interfaz hermana de `TerminalHost` (mismos
-  estados de conexión + TOFU, `sendPrompt`, `respondPermission`, `cancelTurn`,
-  `toggleToolCall`); `HasConnection` común a ambos hosts; `AcpMode` (TERMINAL/CHAT).
-- `commonMain` `session/TerminalHost.kt`: `TerminalConfig` gana `acpRunDir` (relativo
-  al home remoto; default `.acp-ssh-kmp`) y `acpCwd` (default: `pwd` remoto); el
-  `remoteCommand` pasa a ser el comando de arranque del agente en modo chat.
-- `android` `AndroidSsh.kt`: conexión SSH + TOFU + keyProvider extraídos de
-  `AndroidSshTerminalHost` (el plan marcaba esa duplicación como riesgo de Fase C/D);
-  `AndroidSshTerminalHost` lo usa ahora. `AndroidAcpHost`: connect → `AcpSession`
-  → clientes updates/permisos → `AcpSessionStore`; `onEof` → desconexión limpia
-  (el proceso remoto sobrevive). `MainActivity` construye ambos hosts.
-- `desktopMain` `DesktopAcpHost.kt`: mismo patrón sobre `SshjConnect` + `exec`
-  kotlinx.io; cancela el **job** de conexión (no el scope) para permitir reconexiones.
-  `Main.kt` (desktop) construye ambos hosts.
-- `commonMain` `App.kt`: `App(terminalHost, acpHost)` con selector de modo en
-  `ConnectionScreen` (FilterChips Terminal/Chat; label del comando según modo);
-  `HostKeyDialog` despacha al host activo. `ChatScreen.kt`: burbujas usuario/agente/
-  pensamiento, autoscroll, plan, tarjetas de tool call expandibles (input/output/diff),
-  modal de permiso (opciones del agente + cancelar → outcome cancelled), input +
-  enviar + cancelar turno (■), indicador de streaming.
+- `commonMain` `session/AcpHost.kt`: interface sibling to `TerminalHost` (same
+  connection + TOFU states, `sendPrompt`, `respondPermission`, `cancelTurn`,
+  `toggleToolCall`); `HasConnection` common to both hosts; `AcpMode` (TERMINAL/CHAT).
+- `commonMain` `session/TerminalHost.kt`: `TerminalConfig` gains `acpRunDir` (relative
+  to the remote home; default `.acp-ssh-kmp`) and `acpCwd` (default: remote `pwd`); the
+  `remoteCommand` becomes the agent's startup command in chat mode.
+- `android` `AndroidSsh.kt`: SSH connection + TOFU + keyProvider extracted from
+  `AndroidSshTerminalHost` (the plan flagged that duplication as a Phase C/D risk);
+  `AndroidSshTerminalHost` now uses it. `AndroidAcpHost`: connect → `AcpSession`
+  → update/permission clients → `AcpSessionStore`; `onEof` → clean disconnection
+  (the remote process survives). `MainActivity` builds both hosts.
+- `desktopMain` `DesktopAcpHost.kt`: same pattern over `SshjConnect` + kotlinx.io
+  `exec`; cancels the connection **job** (not the scope) to allow reconnections.
+  `Main.kt` (desktop) builds both hosts.
+- `commonMain` `App.kt`: `App(terminalHost, acpHost)` with a mode selector in
+  `ConnectionScreen` (Terminal/Chat FilterChips; command label depends on mode);
+  `HostKeyDialog` dispatches to the active host. `ChatScreen.kt`: user/agent/
+  thinking bubbles, autoscroll, plan, expandable tool-call cards (input/output/diff),
+  permission modal (agent options + cancel → cancelled outcome), input +
+  send + cancel turn (■), streaming indicator.
 
-**Verificación:** compilado completo de common/desktop/android + UI con el plugin de
-Compose. Bugs reales detectados y corregidos durante la verificación fuera de gradle
-(con `-jvm-target 17` y detección de errores fiable): `onChannelEof` llamaba a una
-función `suspend` desde contexto no-suspend en ambos hosts; `App.kt` usaba
-`loadLastConfig()` sobre `HasConnection`, que no lo exponía (ahora sí); carrera de
-ids en `AcpClient.request()` (se captura el id dentro del lock); declaración
-duplicada de `InlineText` en ChatScreen. Falta (máquina con SDK): `:android:assembleDebug`
-y el smoke manual.
+**Verification:** full compile of common/desktop/android + UI with the Compose
+plugin. Real bugs detected and fixed during verification outside gradle
+(with `-jvm-target 17` and reliable error detection): `onChannelEof` called a
+`suspend` function from non-suspend context in both hosts; `App.kt` called
+`loadLastConfig()` on `HasConnection`, which didn't expose it (now it does); an
+id race in `AcpClient.request()` (the id is now captured inside the lock);
+duplicate `InlineText` declaration in ChatScreen. Still pending (machine with SDK):
+`:android:assembleDebug` and the manual smoke test.
 
-## Fase E — Diffs, plan, markdown: COMPLETADA (2026-08-10)
+## Phase E — Diffs, plan, markdown: COMPLETE (2026-08-10)
 
-**Contenido:**
+**Content:**
 
-- `commonMain` `markdown/Markdown.kt`: parser markdown mínimo y determinista —
-  párrafos, encabezados #–######, listas ordenadas/desordenadas, citas, bloques de
-  código con fence (con language), separador; en línea `code`, **negrita**, *cursiva*
-  y [enlaces](url) anidados. Render en `ChatScreen` con `AnnotatedString` por estilos.
-- `commonMain` `diff/UnifiedDiff.kt`: diff unificado estilo `diff -u` con **Myers
-  (O(ND) en espacio lineal, divide-and-conquer)** sobre líneas, tope de profundidad
-  (degradación a todo-borrado/todo-añadido en archivos enormes), hunks con contexto
-  y cabeceras `@@ -a,b +c,d @@`; los borrados van antes que los añadidos. Render
-  coloreado en `ChatScreen` (verde/rojo/azul/gris sobre fondo oscuro).
-- `commonTest`: `MarkdownTest` (9) y `UnifiedDiffTest` (9: identical, new/deleted
-  file, sustitución, cabeceras, dos hunks separados, insert grande, render, myers).
+- `commonMain` `markdown/Markdown.kt`: minimal, deterministic markdown parser —
+  paragraphs, headings #–######, ordered/unordered lists, quotes, fenced code
+  blocks (with language), separator; inline `code`, **bold**, *italics*
+  and nested [links](url). Rendered in `ChatScreen` with `AnnotatedString` styles.
+- `commonMain` `diff/UnifiedDiff.kt`: `diff -u`-style unified diff with **Myers
+  (O(ND) in linear space, divide-and-conquer)** over lines, a depth cap
+  (degrading to all-deleted/all-added on huge files), hunks with context
+  and `@@ -a,b +c,d @@` headers; deletions come before additions. Colored
+  rendering in `ChatScreen` (green/red/blue/gray on a dark background).
+- `commonTest`: `MarkdownTest` (9) and `UnifiedDiffTest` (9: identical, new/deleted
+  file, substitution, headers, two separate hunks, large insert, render, myers).
 
-**Verificación:** 76/76 tests (los de E incluidos). Bugs reales encontrados y
-corregidos durante la verificación fuera de gradle: `encodeDefaults=false` omitía
-los campos por defecto de los requests (serializaba `{}`); el render del diff no
-añadía los prefijos `+`/`-`; `groupValues[2]` en el regex de listas ordenadas; el
-test del cliente tenía una race con el canal fake (sin `\n` el framer emitía solo en
-EOF y mataba el reader).
+**Verification:** 76/76 tests (E's included). Real bugs found and
+fixed during verification outside gradle: `encodeDefaults=false` was omitting
+requests' default fields (serialized as `{}`); the diff renderer wasn't
+adding the `+`/`-` prefixes; `groupValues[2]` in the ordered-list regex; the
+client test had a race with the fake channel (without `\n` the framer only emitted on
+EOF and killed the reader).
 
-## Verificación real con SDK y bugs encontrados/corregidos (2026-08-10)
+## Real verification with SDK and bugs found/fixed (2026-08-10)
 
-Se encontró un JDK 21 (`/tmp/toolchain/jdk21`) en el sandbox y se pudo correr por fin
-`:common:desktopTest` y ambos scripts de validación (`validate-acp-persist.sh`,
-`validate-acp-client.sh`) contra el sshd de prueba real — lo que las Fases B/C/D
-daban por "completado" nunca se había ejecutado de punta a punta. Al correrlos
-aparecieron **tres bugs reales**, no solo falta de entorno:
+A JDK 21 (`/tmp/toolchain/jdk21`) was found in the sandbox and it was finally possible to run
+`:common:desktopTest` and both validation scripts (`validate-acp-persist.sh`,
+`validate-acp-client.sh`) against the real test sshd — what Phases B/C/D
+had marked as "complete" had never been run end-to-end. Running them revealed
+**three real bugs**, not just an environment gap:
 
-1. **`AcpSession.close()` colgaba ~30s en cada desconexión** (mismo código que usan
-   `AndroidAcpHost.disconnect()`/`DesktopAcpHost.disconnect()` en producción).
-   Causa: `SshjExecChannel.close()`/`SshjExecRawChannel.close()` llaman al `close()`
-   normal de SSHJ, que bloquea esperando el ACK de cierre del canal remoto — y el
-   `cat $STDOUT_FIFO` que respalda el canal lector nunca sale por sí solo (por
-   diseño, para sobrevivir a la reconexión), así que ese ACK nunca llega y SSHJ
-   revienta con su timeout por defecto (30s). **Fix:** `closeChannelWithTimeout()`
-   en ambos archivos — el cierre real corre en un hilo daemon con `join(2_000)`;
-   si no termina a tiempo se abandona (se libera solo cuando el transporte SSH
-   termine de desconectarse) y el llamador no se bloquea.
-2. **Carrera de lector huérfano en el FIFO al reconectar.** Al arreglar (1) se
-   reveló un problema más de fondo: sin pty, cerrar el canal `exec` del lector no
-   le llega como señal al `cat` remoto — el proceso viejo se queda bloqueado
-   leyendo el mismo FIFO que el nuevo lector del reconnect, y el kernel entrega
-   cada escritura a uno solo de los lectores bloqueados (no a todos), pudiendo
-   perder el mensaje si se lo entrega al huérfano. Confirmado con `jstack`: el
-   segundo round-trip de `validate-acp-persist.sh` se quedaba esperando datos que
-   nunca llegaban. **Fix:** `readerCommand`/`writerCommand` en `RemoteAcpProcess.kt`
-   ahora matan por PID (archivo `acp-reader.pid`/`acp-writer.pid`) al lector/escritor
-   anterior antes de registrarse ellos mismos, así solo hay un lector vivo por FIFO.
-3. **Las lecturas del canal `exec` no eran cancelables.** Al investigar (2) con
-   `jstack` se encontró que un `withTimeout(5_000)` alrededor de una lectura NDJSON
-   se quedó bloqueado más de una hora sin dispararse: `readChunk()` en
-   `RawByteChannels.kt` (desktop) y `SshjExecRawChannel.kt` (Android) llamaban a la
-   lectura bloqueante de SSHJ sin `runInterruptible`, así que la cancelación de la
-   coroutine nunca interrumpía el hilo bloqueado. Se confirmó en el código fuente de
-   SSHJ que `ChannelInputStream.read()` sí convierte `InterruptedException` en
-   `InterruptedIOException` correctamente, así que el fix era aplicable: las tres
-   operaciones (`readChunk`/`write`/`flush`) ahora corren dentro de
-   `runInterruptible(Dispatchers.IO) { ... }` en ambas plataformas.
-4. Bug menor adicional (sin impacto en producción): el agente NDJSON fake de
-   `validate-acp-client.sh` (`FAKE_ACP_AGENT` en `Main.kt`) tenía llaves mal
-   contadas a mano en dos líneas (`plan` con una `}` de menos, `request_permission`
-   con una de más) — corrompía el NDJSON y colgaba el test hasta su timeout de 15s.
+1. **`AcpSession.close()` hung for ~30s on every disconnection** (the same code used
+   by `AndroidAcpHost.disconnect()`/`DesktopAcpHost.disconnect()` in production).
+   Cause: `SshjExecChannel.close()`/`SshjExecRawChannel.close()` call SSHJ's normal
+   `close()`, which blocks waiting for the remote channel's close ACK — and the
+   `cat $STDOUT_FIFO` backing the reader channel never exits on its own (by
+   design, to survive reconnection), so that ACK never arrives and SSHJ
+   blows up with its default 30s timeout. **Fix:** `closeChannelWithTimeout()`
+   in both files — the actual close runs on a daemon thread with `join(2_000)`;
+   if it doesn't finish in time it's abandoned (it will only be freed once the
+   SSH transport finishes disconnecting) and the caller doesn't block.
+2. **Orphaned-reader race on the FIFO during reconnect.** Fixing (1) revealed
+   a deeper issue: without a pty, closing the reader's `exec` channel doesn't
+   reach the remote `cat` as a signal — the old process stays blocked
+   reading the same FIFO as the new reader from the reconnect, and the kernel
+   delivers each write to only one of the blocked readers (not to all), possibly
+   losing the message if it's delivered to the orphan. Confirmed with `jstack`:
+   the second round-trip of `validate-acp-persist.sh` hung waiting for data that
+   never arrived. **Fix:** `readerCommand`/`writerCommand` in `RemoteAcpProcess.kt`
+   now kill the previous reader/writer by PID (`acp-reader.pid`/`acp-writer.pid`
+   file) before registering themselves, so there's only ever one live reader per FIFO.
+3. **Reads on the `exec` channel were not cancellable.** While investigating (2) with
+   `jstack`, it was found that a `withTimeout(5_000)` around an NDJSON read
+   stayed blocked for over an hour without firing: `readChunk()` in
+   `RawByteChannels.kt` (desktop) and `SshjExecRawChannel.kt` (Android) called
+   SSHJ's blocking read without `runInterruptible`, so coroutine cancellation
+   never interrupted the blocked thread. It was confirmed in SSHJ's source code
+   that `ChannelInputStream.read()` does correctly convert `InterruptedException`
+   into `InterruptedIOException`, so the fix was applicable: all three
+   operations (`readChunk`/`write`/`flush`) now run inside
+   `runInterruptible(Dispatchers.IO) { ... }` on both platforms.
+4. Additional minor bug (no production impact): the fake NDJSON agent in
+   `validate-acp-client.sh` (`FAKE_ACP_AGENT` in `Main.kt`) had miscounted
+   braces by hand in two lines (`plan` missing a `}`, `request_permission`
+   with one extra) — this corrupted the NDJSON and hung the test until its
+   15s timeout.
 
-**Verificación tras los fixes:** `:common:desktopTest` 100/101 (el único que falla,
-`TerminalEmulatorTest.wrapsAtLastColumn`, es preexistente y ajeno a ACP — no toca
-archivos de este diff). `validate-acp-persist.sh` → `PASS` (round-trip 1, cierre y
-reapertura de canales, round-trip 2 tras "reconexión", ~20s). `validate-acp-client.sh`
-→ `PASS` (`initialize`, `session/new`, `prompt` con streaming de texto + tool call +
-diff + plan, `request_permission` con 2 opciones, `stopReason=end_turn`).
+**Verification after the fixes:** `:common:desktopTest` 100/101 (the only failure,
+`TerminalEmulatorTest.wrapsAtLastColumn`, is pre-existing and unrelated to ACP — it doesn't touch
+any files in this diff). `validate-acp-persist.sh` → `PASS` (round-trip 1, closing and
+reopening channels, round-trip 2 after "reconnection", ~20s). `validate-acp-client.sh`
+→ `PASS` (`initialize`, `session/new`, `prompt` with text streaming + tool call +
+diff + plan, `request_permission` with 2 options, `stopReason=end_turn`).
 
-## Verificación aún pendiente (Android SDK / agente real)
+## Verification still pending (Android SDK / real agent)
 
-1. `:android:assembleDebug` + smoke manual (selector Terminal/Chat, permisos, diffs)
-   — este sandbox no tiene Android SDK instalado (`local.properties` apunta a un
-   `sdk.dir` que no existe aquí); los fixes de esta sección se revisaron a mano por
-   ser el mismo patrón ya verificado en desktop, pero no se compilaron con AGP.
-2. Contra el agente real: instalar `claude-code-acp` en el servidor y apuntar el
-   `remoteCommand` del modo chat a su ruta; verificar streaming, tool calls, diffs,
-   `request_permission` con claude en modo manual.
+1. `:android:assembleDebug` + manual smoke test (Terminal/Chat selector, permissions, diffs)
+   — this sandbox has no Android SDK installed (`local.properties` points to an
+   `sdk.dir` that doesn't exist here); this section's fixes were reviewed by hand,
+   since they're the same pattern already verified on desktop, but not compiled with AGP.
+2. Against the real agent: install `claude-code-acp` on the server and point chat mode's
+   `remoteCommand` at its path; verify streaming, tool calls, diffs,
+   `request_permission` with claude in manual mode.
 
-## Retomar ACP — perfiles guardados, claves gestionadas y tabs paralelos (2026-08-10, borrador)
+## Resuming ACP — saved profiles, managed keys and parallel tabs (2026-08-10, draft)
 
-> Estado: planificado, sin código. Pedido del usuario: no fijar un comando por
-> defecto y permitir varios comandos guardados; la clave privada no debe mostrarse
-> siempre en pantalla (select en vez de textarea permanente); varias configuraciones
-> de conexión guardadas; varios tabs de chat en paralelo, lo que implica que el host
-> soporte más de una conexión/sesión ACP a la vez. DeepSeek ejecuta esto después.
+> Status: planned, no code. User request: don't hardcode a default command
+> and allow several saved commands; the private key should not always be
+> shown on screen (a select instead of a permanently visible textarea); several
+> saved connection configurations; several chat tabs in parallel, which implies the host
+> must support more than one connection/ACP session at a time. DeepSeek executes this afterward.
 
-### Por qué no es un cambio de UI aislado
+### Why this isn't an isolated UI change
 
-Hoy `SecureStore` (`android/.../SecureStore.kt:29-52`) guarda **una sola**
-configuración con claves fijas (`host`, `port`, `user`, `pem`, `command`,
-`public_key`) — cada `saveConfig()` pisa la anterior, no hay lista. Desktop ni
-siquiera tiene esto: `DesktopAcpHost`/`DesktopSshTerminalHost` guardan `lastConfig`
-en una variable en memoria, se pierde al cerrar la app. `ConnectionScreen.kt:48,109-126`
-pinta la clave PEM en un `OutlinedTextField` multilinea siempre visible, precargado
-con el secreto en claro cada vez que se abre la pantalla; `command` (`ConnectionScreen.kt:49-51`)
-es un único campo de texto libre con un default hardcodeado por modo
-(`"tmux new -As claude-terminal"` / `"claude-code-acp"`). Y tanto `AcpHost` como
-`TerminalHost` son **de una sola sesión**: `AndroidAcpHost`/`DesktopAcpHost` tienen
-variables singulares (`transport`, `acpSession`, `acpClient`, `sessionStore`) y
-`connect()` llama a `disconnect()` primero — conectar de nuevo mata la sesión
-anterior. `App.kt:52-53` tiene un único `mode` y un único `active: HasConnection`,
-sin concepto de "varias sesiones vivas" en absoluto. Cuatro pedidos → cuatro capas
-distintas a tocar (storage, UI de conexión, capa de host/sesión, UI de chat).
+Today `SecureStore` (`android/.../SecureStore.kt:29-52`) stores **a single**
+configuration with fixed keys (`host`, `port`, `user`, `pem`, `command`,
+`public_key`) — every `saveConfig()` overwrites the previous one, there's no list. Desktop
+doesn't even have this: `DesktopAcpHost`/`DesktopSshTerminalHost` keep `lastConfig`
+in an in-memory variable, lost on app close. `ConnectionScreen.kt:48,109-126`
+renders the PEM key in an always-visible multiline `OutlinedTextField`, preloaded
+with the secret in the clear every time the screen opens; `command` (`ConnectionScreen.kt:49-51`)
+is a single free-text field with a hardcoded default per mode
+(`"tmux new -As claude-terminal"` / `"claude-code-acp"`). And both `AcpHost` and
+`TerminalHost` are **single-session**: `AndroidAcpHost`/`DesktopAcpHost` have
+singular variables (`transport`, `acpSession`, `acpClient`, `sessionStore`) and
+`connect()` calls `disconnect()` first — connecting again kills the previous
+session. `App.kt:52-53` has a single `mode` and a single `active: HasConnection`,
+with no concept of "several live sessions" at all. Four requests → four different
+layers to touch (storage, connection UI, host/session layer, chat UI).
 
-### Qué se reutiliza tal cual
+### What's reused as-is
 
-- `PemFileIo.kt` (`rememberPemExporter`/`rememberPemImporter`, SAF en Android /
-  `JFileChooser` en desktop): la mecánica de importar/exportar `.pem` ya existe,
-  solo hay que conectarla a una lista de claves guardadas en vez de a un único
-  campo de texto.
-- TOFU (`TofuHostKeyVerifier`), generación Ed25519 (`generateEd25519SshKey`),
-  `AcpSession`/`AcpClient`/`RemoteAcpProcess`: nada de esto cambia — el fix de
-  Fase B/D de evitar el lector huérfano por PID (`RemoteAcpProcess.kt`) es
-  precisamente lo que hace seguro tener varios `runDir` concurrentes (ver Fase H).
+- `PemFileIo.kt` (`rememberPemExporter`/`rememberPemImporter`, SAF on Android /
+  `JFileChooser` on desktop): the `.pem` import/export mechanics already exist,
+  they just need to be wired to a list of saved keys instead of a single
+  text field.
+- TOFU (`TofuHostKeyVerifier`), Ed25519 generation (`generateEd25519SshKey`),
+  `AcpSession`/`AcpClient`/`RemoteAcpProcess`: none of this changes — the Phase B/D
+  fix that avoids the orphaned reader via PID (`RemoteAcpProcess.kt`) is
+  precisely what makes it safe to have several concurrent `runDir`s (see Phase H).
 
-### Fase F — Almacenamiento multi-perfil (storage puro, sin UI)
+### Phase F — Multi-profile storage (pure storage, no UI)
 
-**1. Modelo de datos nuevo** (`commonMain`, `kotlinx.serialization`):
+**1. New data model** (`commonMain`, `kotlinx.serialization`):
 
 ```kotlin
 data class SavedKey(val id: String, val label: String, val privateKeyPem: String, val publicKeyLine: String? = null)
@@ -627,372 +631,372 @@ data class ConnectionProfile(
     val host: String,
     val port: Int = 22,
     val username: String,
-    val keyId: String,        // referencia a SavedKey.id
-    val commandId: String?,   // referencia a SavedCommand.id; null = comando vacío (shell por defecto en modo Terminal)
+    val keyId: String,        // reference to SavedKey.id
+    val commandId: String?,   // reference to SavedCommand.id; null = empty command (default shell in Terminal mode)
     val acpRunDir: String? = null,
     val acpCwd: String? = null,
 )
 ```
 
-`mode: AcpMode? = null` en `SavedCommand` permite comandos reutilizables entre
-Terminal y Chat (p. ej. nada impide guardar `tmux new -As claude-terminal` y
-`claude-code-acp` en la misma lista) o marcados para un modo si el usuario quiere
-separarlos; el selector de comandos (Fase G) filtra por modo pero muestra "ver
-todos" para reutilizar uno de otro modo.
+`mode: AcpMode? = null` on `SavedCommand` allows commands to be reused between
+Terminal and Chat (e.g. nothing prevents saving `tmux new -As claude-terminal` and
+`claude-code-acp` in the same list) or tagged for a single mode if the user wants to
+keep them separate; the command selector (Phase G) filters by mode but shows a "show
+all" option to reuse one from another mode.
 
-**2. `ProfileStore` — interfaz común** (`commonMain`, sin dependencias de
-plataforma): `listProfiles()/saveProfile()/deleteProfile()`,
+**2. `ProfileStore` — common interface** (`commonMain`, no platform
+dependencies): `listProfiles()/saveProfile()/deleteProfile()`,
 `listKeys()/saveKey()/deleteKey()`, `listCommands()/saveCommand()/deleteCommand()`,
-`loadLastProfileId()/setLastProfileId()` (qué perfil abrir por defecto al entrar).
-Todo por `Flow`/`StateFlow` si la UI necesita reactividad, o simples funciones si
-la UI relee al entrar a la pantalla (más simple, evaluar en Fase G).
+`loadLastProfileId()/setLastProfileId()` (which profile to open by default on entry).
+All via `Flow`/`StateFlow` if the UI needs reactivity, or plain functions if
+the UI re-reads on entering the screen (simpler, to be evaluated in Phase G).
 
-**3. Implementación Android** (`android/.../SecureStoreProfileStore.kt`, reemplaza
-gradualmente a `SecureStore`): mismo `EncryptedSharedPreferences`, pero las listas
-se serializan como JSON (`Json.encodeToString(List<ConnectionProfile>)`) bajo una
-sola key por tipo (`profiles`, `keys`, `commands`) en vez de campos sueltos —
-evita migrar el schema de prefs cada vez que se añade un campo. **Migración**:
-al primer arranque tras esta versión, si existen las keys viejas de `SecureStore`
-(`host`/`user`/`pem`/`command`) y no existe ya ningún perfil, crear un
-`ConnectionProfile`+`SavedKey`+`SavedCommand` a partir de ellas (así nadie pierde
-su conexión guardada al actualizar) y borrar las keys viejas.
+**3. Android implementation** (`android/.../SecureStoreProfileStore.kt`, gradually
+replaces `SecureStore`): same `EncryptedSharedPreferences`, but lists are
+serialized as JSON (`Json.encodeToString(List<ConnectionProfile>)`) under a
+single key per type (`profiles`, `keys`, `commands`) instead of loose fields —
+avoids migrating the prefs schema every time a field is added. **Migration**:
+on the first launch after this version, if the old `SecureStore` keys
+(`host`/`user`/`pem`/`command`) exist and no profile exists yet, create a
+`ConnectionProfile`+`SavedKey`+`SavedCommand` out of them (so nobody loses
+their saved connection on update) and delete the old keys.
 
-**4. Implementación desktop** (`common/src/desktopMain/.../DesktopProfileStore.kt`):
-hoy no hay ninguna persistencor — usar un archivo JSON en
-`~/.config/acp-ssh-kmp/profiles.json` (permisos `600`, plano: desktop no tiene
-AndroidX Security ni es el target con amenaza de "otra app en el mismo dispositivo
-lee tus prefs" que sí aplica en Android). Documentar la asimetría de seguridad
-Android (cifrado) vs desktop (archivo plano con permisos de usuario) igual que ya
-se documenta la asimetría TOFU vs `known_hosts`.
+**4. Desktop implementation** (`common/src/desktopMain/.../DesktopProfileStore.kt`):
+there's currently no persistence at all — use a JSON file at
+`~/.config/acp-ssh-kmp/profiles.json` (permissions `600`, plain: desktop has no
+AndroidX Security and isn't a target with the "another app on the same device
+reads your prefs" threat that does apply on Android). Document the security
+asymmetry between Android (encrypted) and desktop (plain file with user
+permissions) the same way the TOFU vs `known_hosts` asymmetry is already documented.
 
-**5. Tests** (`commonTest` para el modelo de datos + reglas de referencia
-`keyId`/`commandId` inválidos; tests de la implementación Android/desktop quedan
-fuera de `commonTest` igual que hoy `SecureStore` no tiene test — evaluar si vale
-un test JVM para `DesktopProfileStore` dado que sí es código nuevo en desktopMain).
+**5. Tests** (`commonTest` for the data model + invalid `keyId`/`commandId`
+reference rules; tests for the Android/desktop implementation stay
+outside `commonTest`, same as `SecureStore` has no test today — evaluate whether
+a JVM test for `DesktopProfileStore` is worthwhile since it is new code in desktopMain).
 
-### Fase G — UI: perfiles, claves y comandos gestionados (reemplaza `ConnectionScreen`)
+### Phase G — UI: managed profiles, keys and commands (replaces `ConnectionScreen`)
 
-**Pantalla de perfiles** (nueva, antes de lo que hoy es `ConnectionScreen`): lista
-de `ConnectionProfile` guardados (label + host) con "Conectar" / "Editar" / "Duplicar"
-/ "Borrar", botón "Nueva conexión". Si no hay perfiles, ir directo al formulario
-(no forzar una pantalla vacía intermedia).
+**Profiles screen** (new, before what's today the `ConnectionScreen`): list
+of saved `ConnectionProfile`s (label + host) with "Connect" / "Edit" / "Duplicate"
+/ "Delete", "New connection" button. If there are no profiles, go straight to the form
+(don't force an intermediate empty screen).
 
-**Formulario de conexión** (`ConnectionScreen` reescrita): host/puerto/usuario en
-texto libre como hoy; **clave**: `ExposedDropdownMenuBox` (Material3) con las
-`SavedKey` guardadas por label — la clave NUNCA se pinta en pantalla al elegirla
-del select, solo su label; opción "Gestionar claves" abre un diálogo con
-generar/importar/exportar/renombrar/borrar sobre la lista (reutiliza
-`rememberPemExporter`/`rememberPemImporter` de Fase F); un botón explícito
-"Mostrar clave" (no automático) permite ver el PEM en claro de la clave
-seleccionada, para el caso de que el usuario necesite copiarla — fricción
-deliberada, no lo oculta del todo. **Comando**: mismo patrón de dropdown sobre
-`SavedCommand` (filtrado por `mode` actual, con opción "ver todos"), opción
-"Nuevo comando" que abre un campo de texto + label para guardarlo, y una
-opción de default **explícita** — "shell (default)" en modo Terminal,
-"claude-code-acp (default)" en modo Chat — en vez de un default siempre
-precargado. El default es visible en la UI y coincide con el fallback de
-`AcpSession.DEFAULT_AGENT`; nunca un fallback oculto tras una opción que dice
-"sin comando" (decisión cerrada, ver "Decisiones cerradas" #5). Cubre el
-pedido de "que la app pueda no incluir comando por defecto" en el sentido de
-que nada se precarga en el formulario: el usuario elige comando guardado,
-default explícito, o escribe uno nuevo.
+**Connection form** (rewritten `ConnectionScreen`): host/port/user as free
+text as today; **key**: an `ExposedDropdownMenuBox` (Material3) with saved
+`SavedKey`s by label — the key is NEVER rendered on screen when choosing it
+from the select, only its label; a "Manage keys" option opens a dialog with
+generate/import/export/rename/delete on the list (reuses
+`rememberPemExporter`/`rememberPemImporter` from Phase F); an explicit
+"Show key" button (not automatic) lets the user view the selected key's
+plain PEM, for cases where the user needs to copy it — deliberate
+friction, not fully hidden. **Command**: same dropdown pattern over
+`SavedCommand` (filtered by the current `mode`, with a "show all" option),
+a "New command" option that opens a text field + label to save it, and an
+**explicit** default option — "shell (default)" in Terminal mode,
+"claude-code-acp (default)" in Chat mode — instead of an always
+preloaded default. The default is visible in the UI and matches the fallback
+of `AcpSession.DEFAULT_AGENT`; never a hidden fallback behind an option that says
+"no command" (closed decision, see "Closed decisions" #5). This covers
+the request for "the app not always including a default command" in the sense
+that nothing is preloaded in the form: the user picks a saved command, an
+explicit default, or types a new one.
 
-**`TerminalConfig`** pierde su rol de "única fuente de verdad guardada": pasa a
-construirse en el momento de conectar a partir de `ConnectionProfile` +
-`SavedKey` + `SavedCommand` resueltos (`profile.toTerminalConfig(key, command)`),
-en vez de ser lo que persiste `SecureStore` directamente.
+**`TerminalConfig`** loses its role as the "single saved source of truth": it now gets
+built at connection time from the resolved `ConnectionProfile` +
+`SavedKey` + `SavedCommand` (`profile.toTerminalConfig(key, command)`),
+instead of being what `SecureStore` persists directly.
 
-### Fase H — Multi-sesión ACP: una conexión SSH, varios agentes remotos
+### Phase H — Multi-session ACP: one SSH connection, several remote agents
 
-**Decisión de diseño — un proceso de agente por tab, no multiplexado por
-`sessionId` sobre un único agente.** El protocolo ya viaja con `sessionId` en cada
-`session/update` (`AcpClient.kt:171` lee `message.params` pero `route()` solo
-pasa `update`, sin `sessionId`, al `Channel<SessionUpdate>` único — así que hoy
-NO hay demux) y en teoría un solo `claude-code-acp` podría atender varias
-`session/new` a la vez. Pero eso exige (a) verificar que el agente real soporta
-bien sesiones concurrentes — sin binario real a mano no se puede confirmar, ver
-la brecha ya documentada en "Verificación aún pendiente"/punto 2 — y (b) reescribir
-`AcpClient`/`AcpSessionStore` para rutear por `sessionId`. La alternativa —
-**un `AcpSession` (con su propio `runDir`, ergo sus propios FIFOs/proceso remoto)
-por tab, todos sobre la misma conexión SSH ya autenticada** — no depende de esa
-suposición no verificada, aísla fallos (un agente que crashea no afecta a los
-demás tabs) y reutiliza sin cambios el fix de Fase B/D del lector huérfano por
-PID (cada `runDir` es independiente, no hay colisión de FIFOs). Costo: un proceso
-`claude-code-acp` por tab en el servidor en vez de uno compartido — aceptable
-salvo que el usuario abra decenas de tabs a la vez.
+**Design decision — one agent process per tab, not multiplexed by
+`sessionId` over a single agent.** The protocol already carries a `sessionId` in every
+`session/update` (`AcpClient.kt:171` reads `message.params` but `route()` only
+passes `update`, without `sessionId`, to the single `Channel<SessionUpdate>` — so today
+there's NO demux) and in theory a single `claude-code-acp` could serve several
+`session/new`s at once. But that requires (a) verifying that the real agent handles
+concurrent sessions well — without a real binary at hand this can't be confirmed, see
+the gap already documented in "Verification still pending"/item 2 — and (b) rewriting
+`AcpClient`/`AcpSessionStore` to route by `sessionId`. The alternative —
+**one `AcpSession` (with its own `runDir`, hence its own FIFOs/remote process)
+per tab, all over the same already-authenticated SSH connection** — doesn't depend
+on that unverified assumption, isolates failures (a crashing agent doesn't affect
+other tabs) and reuses unchanged the Phase B/D fix for the orphaned reader via
+PID (each `runDir` is independent, no FIFO collision). Cost: one
+`claude-code-acp` process per tab on the server instead of a shared one — acceptable
+unless the user opens dozens of tabs at once.
 
-**`AcpSessionManager`** (`commonMain`, nueva clase — hoy esta responsabilidad vive
-mezclada dentro de `AndroidAcpHost`/`DesktopAcpHost`): mantiene la conexión SSH
-(un `AcpExecTransport`/cliente compartido) y un mapa `tabId -> AcpSessionEntry`
-donde cada entrada tiene su propio `AcpSession`, `AcpClient`, `AcpSessionStore`
-(cada `runDir` se autogenera como `${config.acpRunDir}/tab-<uuid>` si no se fija
-uno explícito, para que dos tabs del mismo perfil no compartan FIFOs por accidente).
-Expone `StateFlow<Map<String, AcpSessionState>>` o una lista de
-`StateFlow<AcpSessionState>` por tab, `openTab(profile)`, `closeTab(tabId)`
-(cierra ese `AcpSession` sin tocar la conexión SSH ni los demás tabs — el
-agente remoto de ESE tab sigue vivo tras cerrar el tab, igual que ya sobrevive a
-un disconnect; "cerrar tab" en la UI no debería significar "matar el proceso
-remoto" salvo que el usuario lo pida explícito, ver Fase I).
+**`AcpSessionManager`** (`commonMain`, new class — today this responsibility lives
+mixed into `AndroidAcpHost`/`DesktopAcpHost`): keeps the SSH connection
+(a shared `AcpExecTransport`/client) and a `tabId -> AcpSessionEntry` map
+where each entry has its own `AcpSession`, `AcpClient`, `AcpSessionStore`
+(each `runDir` is auto-generated as `${config.acpRunDir}/tab-<uuid>` unless
+one is explicitly fixed, so two tabs of the same profile don't accidentally share FIFOs).
+Exposes `StateFlow<Map<String, AcpSessionState>>` or a list of
+`StateFlow<AcpSessionState>` per tab, `openTab(profile)`, `closeTab(tabId)`
+(closes that `AcpSession` without touching the SSH connection or the other
+tabs — the remote agent for THAT tab stays alive after closing the tab, the same
+way it already survives a disconnect; "closing a tab" in the UI shouldn't mean
+"kill the remote process" unless the user explicitly asks for it, see Phase I).
 
-**`AcpHost` cambia de forma**: en vez de una interfaz "una sesión", pasa a ser
-(o a envolver) el `AcpSessionManager`. Revisar si conviene mantener `AcpHost`
-como fachada de UN tab (para no romper `App.kt`/`ChatScreen` de golpe) mientras
-`AcpSessionManager` vive por debajo — decisión de implementación a tomar en el
-momento, no bloqueante para el resto del plan.
+**`AcpHost` changes shape**: instead of a "single session" interface, it becomes
+(or wraps) the `AcpSessionManager`. Consider whether it's worth keeping `AcpHost`
+as a facade for ONE tab (to avoid breaking `App.kt`/`ChatScreen` all at once)
+while `AcpSessionManager` lives underneath — an implementation decision to be
+made at the time, not blocking for the rest of the plan.
 
-**Reutilización de la conexión SSH**: hoy `AndroidAcpHost.connect()` abre un
-`SSHClient` nuevo cada vez; para varios tabs sobre el mismo perfil, extraer esa
-conexión a algo que viva mientras el `AcpSessionManager` viva, no por tab —
-`AndroidSsh.connect()` (ya extraído en Fase D, `android/.../AndroidSsh.kt`) ya
-devuelve la conexión desnuda, así que esta capa es la que hoy falta, no algo que
-haya que rehacer desde cero.
+**SSH connection reuse**: today `AndroidAcpHost.connect()` opens a new
+`SSHClient` every time; for several tabs on the same profile, extract that
+connection into something that lives as long as the `AcpSessionManager` does, not per
+tab — `AndroidSsh.connect()` (already extracted in Phase D, `android/.../AndroidSsh.kt`)
+already returns the bare connection, so this layer is what's missing today, not
+something that needs to be rebuilt from scratch.
 
-### Fase I — UI: tabs de chat en paralelo
+### Phase I — UI: parallel chat tabs
 
-**`TabRow` (Material3)** sobre `ChatScreen`: un tab por sesión abierta en el
-`AcpSessionManager`, "+" para abrir uno nuevo (siempre del mismo perfil que el
-tab activo, decisión cerrada — ver "Decisiones cerradas con el usuario"),
-long-press o botón "x" para cerrar (deja el proceso remoto corriendo, con una
-acción separada "cerrar y terminar agente" para matarlo explícitamente),
-tope configurable de tabs simultáneos (default 5, con aviso al llegar al
-límite), indicador visual (punto/badge) si un tab en background tiene
-streaming activo o un permiso pendiente (para no perderlo si el usuario está
-mirando otro tab). `ChatScreen` pasa a recibir el `AcpSessionState` del tab
-activo en vez de leerlo directo del host.
+**`TabRow` (Material3)** over `ChatScreen`: one tab per session open in the
+`AcpSessionManager`, "+" to open a new one (always from the same profile as the
+active tab, closed decision — see "Decisions closed with the user"),
+long-press or "x" button to close (leaves the remote process running, with a
+separate "close and terminate agent" action to explicitly kill it),
+configurable cap on simultaneous tabs (default 5, with a warning when the
+limit is reached), visual indicator (dot/badge) if a background tab has
+active streaming or a pending permission (so it isn't missed if the user is
+looking at another tab). `ChatScreen` now receives the active tab's
+`AcpSessionState` instead of reading it directly from the host.
 
-**Alcance deliberadamente fuera de V1**: tabs de **Terminal** en paralelo (el
-usuario solo pidió tabs para chat; Terminal ya tiene tmux para multiplexar, ver
-la nota de diseño de Fase B/pivote a terminal) y tabs contra **servidores
-distintos** en simultáneo (cada tab de este plan comparte la conexión SSH del
-perfil activo — abrir tabs contra otro perfil implicaría otra conexión SSH en
-paralelo, descartado para V1, ver "Decisiones cerradas con el usuario").
+**Deliberately out of scope for V1**: parallel **Terminal** tabs (the
+user only asked for chat tabs; Terminal already has tmux for multiplexing, see
+the design note from the Phase B/terminal pivot) and tabs against **different
+servers** simultaneously (each tab in this plan shares the active profile's SSH
+connection — opening tabs against another profile would mean another SSH connection
+in parallel, ruled out for V1, see "Decisions closed with the user").
 
-### Decisiones cerradas con el usuario (2026-08-10)
+### Decisions closed with the user (2026-08-10)
 
-Las preguntas abiertas de este plan ya se resolvieron con el usuario; quedan
-fijadas para que DeepSeek ejecute sin tener que volver a decidirlas:
+The open questions from this plan were already resolved with the user; they're
+fixed here so DeepSeek can execute without having to decide them again:
 
-1. **Perfil por tab: siempre el mismo que el tab activo.** No se puede elegir
-   perfil al abrir un tab nuevo en V1 — todos los tabs comparten la única
-   conexión SSH del perfil activo, `AcpSessionManager` no gestiona más de una
-   conexión a la vez. (El diseño no lo bloquea a futuro si se pidiera después.)
-2. **Cerrar un tab deja el proceso remoto corriendo.** Igual que un disconnect
-   normal: reconectable después, consistente con el resto del diseño de Fase B.
-   Se añade una acción separada y explícita "cerrar y terminar el agente
-   remoto" para quien sí quiera matar el proceso.
-3. **Límite de tabs simultáneos: tope configurable, default 5.** Avisa al
-   llegar al tope en vez de bloquear en silencio o permitir un número
-   ilimitado de procesos `claude-code-acp` en el servidor.
-4. **Copiar la clave desde "Mostrar clave" está permitido.** La fricción
-   deliberada vive en el paso de "Mostrar" (no automático); una vez visible,
-   copiarla al portapapeles es un flujo normal, sin bloqueo adicional.
-5. **El default de comando existe y es explícito, no oculto.** El pedido de
-   "no fijar un comando por defecto" se interpreta como: nada se precarga en
-   el formulario (no hay default "siempre precargado" como hoy), pero la
-   opción vacía del dropdown muestra el default con su nombre — "shell
-   (default)" en Terminal, "claude-code-acp (default)" en Chat — y el
-   fallback de `AcpSession.agentCommand` (`DEFAULT_AGENT = "claude-code-acp"`)
-   coincide con lo que la UI anuncia. Descartada la opción de error/validación
-   en modo Chat: "sin comando" + default explícito cumple el pedido sin
-   romper el flujo de "conectar y ya".
+1. **Profile per tab: always the same as the active tab.** You cannot choose a
+   profile when opening a new tab in V1 — all tabs share the single
+   SSH connection of the active profile, `AcpSessionManager` doesn't manage more than one
+   connection at a time. (The design doesn't block this in the future if requested later.)
+2. **Closing a tab leaves the remote process running.** Same as a normal
+   disconnect: reconnectable afterward, consistent with the rest of the Phase B design.
+   A separate, explicit "close and terminate the remote agent" action is added
+   for those who do want to kill the process.
+3. **Simultaneous tab limit: configurable cap, default 5.** Warns when the
+   limit is reached instead of silently blocking or allowing an
+   unlimited number of `claude-code-acp` processes on the server.
+4. **Copying the key from "Show key" is allowed.** The deliberate friction
+   lives in the "Show" step (not automatic); once visible, copying it to
+   the clipboard is a normal flow, with no additional block.
+5. **The default command exists and is explicit, not hidden.** The request for
+   "don't hardcode a default command" is interpreted as: nothing is preloaded in
+   the form (no "always preloaded" default as today), but the dropdown's
+   empty option shows the default with its name — "shell
+   (default)" in Terminal, "claude-code-acp (default)" in Chat — and the
+   fallback of `AcpSession.agentCommand` (`DEFAULT_AGENT = "claude-code-acp"`)
+   matches what the UI announces. The error/validation option in Chat mode was
+   dropped: "no command" + explicit default satisfies the request without
+   breaking the "connect and go" flow.
 
-### Siguiente paso concreto
+### Concrete next step
 
-Fase F no depende de nada pendiente — arranca por el storage antes de tocar
-ninguna UI, igual que el resto de fases de este plan ya siguieron ese orden.
+Phase F depends on nothing pending — it starts with storage before touching
+any UI, the same order the rest of this plan's phases already followed.
 
-## Fases F–I — perfiles, claves, comandos y tabs: COMPLETADAS (2026-08-10)
+## Phases F–I — profiles, keys, commands and tabs: COMPLETE (2026-08-10)
 
-**Contenido:** las cuatro fases pendientes (almacenamiento multi-perfil,
-UI de perfiles/claves/comandos, `AcpSessionManager` multi-tab, `TabRow` en
-`ChatScreen`) llegaron ya escritas por DeepSeek; este cierre fue la
-verificación fuera de gradle de esa entrega, no una implementación nueva.
+**Content:** the four pending phases (multi-profile storage,
+profiles/keys/commands UI, multi-tab `AcpSessionManager`, `TabRow` in
+`ChatScreen`) arrived already written by DeepSeek; this closeout was the
+verification outside gradle of that delivery, not a new implementation.
 
 - `profile/Profiles.kt`/`ProfileStore.kt`: `SavedKey`/`SavedCommand`/
-  `ConnectionProfile` con los campos del diseño (`mode`, `keyId`,
+  `ConnectionProfile` with the fields from the design (`mode`, `keyId`,
   `commandId`, `acpRunDir`, `acpCwd`); `SecureStoreProfileStore` (Android,
-  JSON por colección + migración desde las keys sueltas de `SecureStore`) y
-  `DesktopProfileStore` (JSON en `~/.config/acp-ssh-kmp/profiles.json`,
-  permisos 600).
+  JSON per collection + migration from `SecureStore`'s loose keys) and
+  `DesktopProfileStore` (JSON at `~/.config/acp-ssh-kmp/profiles.json`,
+  permissions 600).
 - `ui/ProfilesScreen.kt`, `ui/KeyManagerDialog.kt`, `ui/CommandManagerDialog.kt`,
-  `ConnectionScreen` reescrita: dropdown de claves que nunca pinta el PEM
-  salvo "Mostrar", dropdown de comandos filtrado por modo con default
-  explícito coincidiendo con `AcpSession.DEFAULT_AGENT`.
-- `session/AcpSessionManager.kt`: un `AcpSession`/proceso por tab sobre una
-  única conexión SSH compartida, runDir autogenerado `tab-<id>`,
-  `openTab`/`closeTab`/`killTabAgent`, reconexión reabriendo los mismos
-  tabIds. `AndroidAcpHost`/`DesktopAcpHost` delegan en el manager en vez de
-  mantener una sola sesión.
-- `ChatScreen.kt`: `ScrollableTabRow` sobre los tabs del manager, límite
-  configurable con aviso, indicador de streaming/permiso pendiente en tabs
-  de fondo, acción separada para matar el agente remoto.
+  rewritten `ConnectionScreen`: key dropdown that never renders the PEM
+  except via "Show", command dropdown filtered by mode with an explicit
+  default matching `AcpSession.DEFAULT_AGENT`.
+- `session/AcpSessionManager.kt`: one `AcpSession`/process per tab over a
+  single shared SSH connection, auto-generated runDir `tab-<id>`,
+  `openTab`/`closeTab`/`killTabAgent`, reconnection reopening the same
+  tabIds. `AndroidAcpHost`/`DesktopAcpHost` delegate to the manager instead of
+  keeping a single session.
+- `ChatScreen.kt`: `ScrollableTabRow` over the manager's tabs, configurable
+  limit with warning, streaming/pending-permission indicator on background
+  tabs, separate action to kill the remote agent.
 
-**Bugs reales encontrados y corregidos durante la verificación:**
+**Real bugs found and fixed during verification:**
 
-1. `KeyManagerDialog.kt` no compilaba: usaba `Row(...)` sin importar
+1. `KeyManagerDialog.kt` didn't compile: it used `Row(...)` without importing
    `androidx.compose.foundation.layout.Row`.
-2. `AcpSessionManagerTest.kt` no compilaba: cuatro referencias a `tabs`/
-   `connection` dentro de los tests le faltaba el receptor `manager.`
-   (`manager.tabs`/`manager.connection`), y un test (`unexpectedEofDisconnectsEverything`)
-   tenía como última expresión del bloque `try` un `withTimeout {}` que
-   devolvía un valor no-`Unit`, lo que JUnit4 rechaza como "should be void".
-3. **Bug real de producción, no solo de tests:** `AcpClient.close()`
-   cancelaba `readerJob` sin silenciar `onEof` antes — cancelar ese job
-   dispara el mismo bloque `finally` que un EOF real (`framer.lines().collect`
-   seguido de `onEof?.invoke()`), así que **cualquier cierre intencionado**
-   (cerrar un tab, reconectar) disparaba de todos modos el aviso de "conexión
-   perdida". Con tabIds reutilizados al reconectar (diseño de Fase H), el
-   `onEof` tardío de la sesión VIEJA de `tab-1` llegaba después de que
-   `entries["tab-1"]` ya apuntara a la sesión NUEVA, y `handleTabEof`
-   desconectaba la conexión recién abierta — reproducido de forma
-   determinista con `AcpSessionManagerTest.reconnectReopensSameTabsOnSameRunDirs`
-   (colgada esperando 2 tabs con sesión tras reconectar; instrumentado con
-   un watcher temporal que confirmó que `_tabs` se vaciaba justo después del
-   handshake de `tab-1`). **Fix:** `close()` pone `onEof = null` antes de
-   cancelar el lector.
-4. Bug menor de test (afecta solo fiabilidad de CI, no producción):
-   `AcpSessionManagerTest.FakeAgent.reader.readChunk` bloqueaba el hilo real
-   con `LinkedBlockingQueue.poll(30, SECONDS)` dentro de una `suspend fun`
-   sin `runInterruptible` — en una sandbox de 2 cores, con `Dispatchers.Default`
-   agotado por varios tests dejando hilos bloqueados sin liberar hasta el
-   timeout de 30s, el resto de la suite (incluyendo clases no relacionadas
-   como `AcpClientTest`) se quedaba sin hilos y todo empezaba a fallar por
-   timeout. Fix: envolver el `poll()` en `runInterruptible(Dispatchers.IO) { ... }`,
-   igual que ya hace el código de producción (Android/desktop) desde la
-   sección "Verificación real con SDK" de más arriba.
-5. `closeTabLeavesRemoteAgentAlive` comprobaba `execLog.none { "cat acp.pid" in it }`
-   para verificar que cerrar un tab no dispara un kill — pero ese mismo
-   substring ya aparece en el script de arranque idempotente
-   (`launchScript`, chequeo `ALREADY_RUNNING`) de CUALQUIER tab que se abre,
-   así que la aserción fallaba siempre, sin relación con el comportamiento
-   real de `closeTab`. Fix: comparar contra `RemoteAcpProcess.killCommand(runDir)`
-   exacto en vez de un substring ambiguo.
+2. `AcpSessionManagerTest.kt` didn't compile: four references to `tabs`/
+   `connection` inside the tests were missing the `manager.` receiver
+   (`manager.tabs`/`manager.connection`), and one test
+   (`unexpectedEofDisconnectsEverything`) had, as the last expression of its `try`
+   block, a `withTimeout {}` returning a non-`Unit` value, which JUnit4 rejects
+   as "should be void".
+3. **Real production bug, not just tests:** `AcpClient.close()`
+   cancelled `readerJob` without silencing `onEof` first — cancelling that job
+   triggers the same `finally` block as a real EOF (`framer.lines().collect`
+   followed by `onEof?.invoke()`), so **any intentional close**
+   (closing a tab, reconnecting) would still fire the "connection
+   lost" notice regardless. With tabIds reused on reconnect (Phase H's design),
+   the late `onEof` from the OLD `tab-1` session arrived after
+   `entries["tab-1"]` already pointed at the NEW session, and `handleTabEof`
+   disconnected the freshly opened connection — reproduced deterministically
+   with `AcpSessionManagerTest.reconnectReopensSameTabsOnSameRunDirs`
+   (hung waiting for 2 tabs to have a session after reconnecting; instrumented with
+   a temporary watcher that confirmed `_tabs` was emptied right after
+   `tab-1`'s handshake). **Fix:** `close()` sets `onEof = null` before
+   cancelling the reader.
+4. Minor test bug (affects only CI reliability, not production):
+   `AcpSessionManagerTest.FakeAgent.reader.readChunk` blocked the real thread
+   with `LinkedBlockingQueue.poll(30, SECONDS)` inside a `suspend fun`
+   without `runInterruptible` — on a 2-core sandbox, with `Dispatchers.Default`
+   exhausted by several tests leaving threads blocked without releasing until
+   the 30s timeout, the rest of the suite (including unrelated classes
+   like `AcpClientTest`) ran out of threads and everything started failing on
+   timeout. Fix: wrap the `poll()` in `runInterruptible(Dispatchers.IO) { ... }`,
+   the same as the production code (Android/desktop) has done since the
+   "Real verification with SDK" section above.
+5. `closeTabLeavesRemoteAgentAlive` checked `execLog.none { "cat acp.pid" in it }`
+   to verify that closing a tab doesn't trigger a kill — but that same
+   substring already appears in the idempotent startup script
+   (`launchScript`, `ALREADY_RUNNING` check) of ANY tab that gets opened,
+   so the assertion always failed, unrelated to `closeTab`'s actual
+   behavior. Fix: compare against the exact `RemoteAcpProcess.killCommand(runDir)`
+   instead of an ambiguous substring.
 
-**Verificación:** `:common:desktopTest` 123/124 en dos corridas consecutivas
-(el único que falla, `TerminalEmulatorTest.wrapsAtLastColumn`, es preexistente
-y ajeno a este diff, igual que ya se documentó en la sección "Verificación real
-con SDK y bugs encontrados/corregidos"); `:desktop:compileKotlinJvm` en verde.
-Sin Android SDK en este entorno: `:android:assembleDebug` y el smoke manual
-(selector de perfiles, gestor de claves/comandos, varios tabs de chat) quedan
-pendientes en una máquina con el SDK instalado, igual que en fases anteriores.
+**Verification:** `:common:desktopTest` 123/124 across two consecutive runs
+(the only failure, `TerminalEmulatorTest.wrapsAtLastColumn`, is pre-existing
+and unrelated to this diff, as already documented in the "Real verification
+with SDK and bugs found/fixed" section); `:desktop:compileKotlinJvm` green.
+No Android SDK in this environment: `:android:assembleDebug` and the manual smoke test
+(profile selector, key/command manager, several chat tabs) remain
+pending on a machine with the SDK installed, same as in previous phases.
 
-## Replanning 2026-08-11 — hacia una app completa (override del alcance V1)
+## Replanning 2026-08-11 — toward a complete app (V1 scope override)
 
-> Estado: planificado con el usuario. **Override explícito de la decisión
-> cerrada #1 de 2026-08-10** ("perfil por tab: siempre el mismo") y del
-> "alcance deliberadamente fuera de V1" de la Fase I: el objetivo ahora SÍ es
-> poder tener, en pestañas paralelas, agentes ACP de perfiles distintos
-> (p. ej. `claude-code-acp` en una, `pi-acp` en otra) y también pestañas de
-> terminal, mezcladas. Las decisiones #2–#5 siguen vigentes.
+> Status: planned with the user. **Explicit override of the closed decision #1
+> from 2026-08-10** ("profile per tab: always the same") and of the
+> "deliberately out of V1 scope" note from Phase I: the goal now IS
+> to be able to have, in parallel tabs, ACP agents from different
+> profiles (e.g. `claude-code-acp` in one, `pi-acp` in another) and also
+> terminal tabs, mixed together. Decisions #2–#5 remain in effect.
 
-### Estado real de la app (auditoría 2026-08-11)
+### Actual state of the app (2026-08-11 audit)
 
-Funciona: terminal PTY con emulador propio; chat ACP multi-tab (mismo perfil)
-con streaming, tool calls, diffs, plan, permisos, markdown; perfiles/claves/
-comandos guardados; persistencia y `session/load` de sesiones; "Sesiones del
-servidor" (retomar/matar huérfanos); selector de modelo/config options;
-auto-reconnect al arrancar. Bugs de crash arreglados hoy: `ScrollableTabRow`
-con lista vacía (cerrar último tab / matar agente) y cierre SSHJ del terminal
-en el hilo main.
+Working: PTY terminal with a custom emulator; multi-tab ACP chat (same profile)
+with streaming, tool calls, diffs, plan, permissions, markdown; saved profiles/keys/
+commands; persistence and `session/load` for sessions; "Server sessions"
+(resume/kill orphans); model/config-options selector;
+auto-reconnect on startup. Crash bugs fixed today: `ScrollableTabRow`
+with an empty list (closing the last tab / killing the agent) and SSHJ close of the terminal
+on the main thread.
 
-Huecos detectados:
-- **Arquitectura de tabs**: el modo Terminal/Chat es global (`App.kt`), una
-  conexión SSH por host (`AcpSessionManager.transport` único), un solo
-  emulador por `TerminalHost` — nada de esto soporta tabs heterogéneos.
-- **Android en background**: sin foreground service, el proceso muere y la
-  SSH con él (el auto-reconnect lo palia, no lo resuelve). Sin notificaciones
-  de permisos pendientes.
-- **Chat**: `available_commands_update` se parsea pero se descarta (sin UI de
-  slash commands); no hay `session/set_mode` (modos de permiso de
-  `claude-code-acp`); solo texto plano en prompts (sin adjuntos/imágenes ni
-  @-menciones).
-- **Terminal**: sin scrollback UI, sin claves con passphrase, sin mouse.
-- **Desktop**: sin TOFU (verifier promiscuo), sin empaquetado.
-- **Housekeeping**: `TerminalEmulatorTest.wrapsAtLastColumn` en rojo desde
-  hace fases; README describe el chat ACP como "roadmap" cuando ya existe;
-  sin CI.
+Gaps found:
+- **Tab architecture**: Terminal/Chat mode is global (`App.kt`), one
+  SSH connection per host (`AcpSessionManager.transport` singular), a single
+  emulator per `TerminalHost` — none of this supports heterogeneous tabs.
+- **Android in background**: without a foreground service, the process dies and
+  SSH with it (auto-reconnect mitigates it, doesn't solve it). No notifications
+  for pending permissions.
+- **Chat**: `available_commands_update` is parsed but discarded (no slash-command
+  UI); no `session/set_mode` (`claude-code-acp`'s permission modes);
+  only plain text in prompts (no attachments/images or @-mentions).
+- **Terminal**: no scrollback UI, no passphrase-protected keys, no mouse.
+- **Desktop**: no TOFU (promiscuous verifier), no packaging.
+- **Housekeeping**: `TerminalEmulatorTest.wrapsAtLastColumn` has been red for
+  several phases; README describes ACP chat as "roadmap" when it already exists;
+  no CI.
 
-### Fase J — Workspace de tabs heterogéneos (la pieza grande)
+### Phase J — Heterogeneous tab workspace (the big piece)
 
-Un único modelo de pestañas por encima del modo:
+A single tab model above the mode:
 
 ```kotlin
 sealed interface WorkspaceTab {
     val tabId: String
     val profileId: String
-    data class Chat(...) : WorkspaceTab      // envuelve la AcpTabState actual
-    data class Terminal(...) : WorkspaceTab  // TerminalEmulator + shell propios
+    data class Chat(...) : WorkspaceTab      // wraps the current AcpTabState
+    data class Terminal(...) : WorkspaceTab  // its own TerminalEmulator + shell
 }
 ```
 
-- **Pool de conexiones SSH** (`SshConnectionPool`, commonMain + factoría por
-  plataforma): mapa `profileId → conexión compartida` con refcount; tabs del
-  mismo perfil comparten conexión (como hoy), tabs de perfiles distintos abren
-  otra. Cerrar el último tab de un perfil libera su conexión. TOFU por
-  conexión (cola de pendientes, un diálogo a la vez).
-- **`WorkspaceManager`** (evolución de `AcpSessionManager`): deja de tener
-  `transport`/`connectedConfig` globales; cada tab resuelve su conexión contra
-  el pool. `AcpSessionManager` actual se conserva casi entero como la rama
-  Chat (runDirs, resume, epoch, remote sessions pasan a ser por-perfil).
-- **`TerminalHost` multi-instancia**: extraer de `AndroidSshTerminalHost` /
-  `DesktopSshTerminalHost` una `TerminalTabSession` (emulador + shell + write
-  loop por tab) sobre la conexión del pool. El host actual queda como caso
-  de un solo tab hasta que la UI migre.
-- **UI**: la barra de tabs sube a `App.kt` (por encima del `when(mode)`);
-  "+" abre un diálogo "nuevo tab" con selector de perfil (default: el del tab
-  activo) y tipo Chat/Terminal según el modo del comando del perfil.
-  `ChatScreen`/`TerminalScreen` pasan a ser contenido de tab.
-- **Persistencia**: `SavedTabSession` gana `profileId` y `type`; los tabs de
-  terminal no persisten sesión (tmux ya cubre eso), solo el tab.
-- **Migración por pasos** (cada uno compila y funciona solo): 1) pool de
-  conexiones detrás de `AcpSessionManager` sin cambiar UI; 2) perfil por tab
-  en chat; 3) tabs de terminal; 4) persistencia extendida.
-- Tope de tabs global (sigue el default 5, decisión #3) + tope de conexiones
-  simultáneas (sugerido: 3) con aviso.
+- **SSH connection pool** (`SshConnectionPool`, commonMain + per-platform factory):
+  a `profileId → shared connection` map with refcount; tabs on the
+  same profile share a connection (as today), tabs on different profiles open
+  another. Closing a profile's last tab releases its connection. TOFU per
+  connection (a queue of pending ones, one dialog at a time).
+- **`WorkspaceManager`** (evolution of `AcpSessionManager`): no longer has
+  global `transport`/`connectedConfig`; each tab resolves its connection against
+  the pool. The current `AcpSessionManager` is kept almost intact as the Chat
+  branch (runDirs, resume, epoch, remote sessions become per-profile).
+- **Multi-instance `TerminalHost`**: extract a `TerminalTabSession` (emulator +
+  shell + write loop per tab) out of `AndroidSshTerminalHost` /
+  `DesktopSshTerminalHost`, over the pool's connection. The current host remains
+  as the single-tab case until the UI migrates.
+- **UI**: the tab bar moves up to `App.kt` (above the `when(mode)`);
+  "+" opens a "new tab" dialog with a profile selector (default: the active
+  tab's) and Chat/Terminal type based on the profile's command mode.
+  `ChatScreen`/`TerminalScreen` become tab content.
+- **Persistence**: `SavedTabSession` gains `profileId` and `type`; terminal
+  tabs don't persist a session (tmux already covers that), only the tab.
+- **Step-by-step migration** (each step compiles and works on its own): 1) connection
+  pool behind `AcpSessionManager` without changing the UI; 2) per-tab
+  profile in chat; 3) terminal tabs; 4) extended persistence.
+- Global tab cap (still the default 5, decision #3) + cap on simultaneous
+  connections (suggested: 3) with a warning.
 
-### Fase K — Robustez Android
+### Phase K — Android robustness
 
-- **Foreground service de conexión** (`connectedDeviceType`/`dataSync`):
-  mantiene vivas las conexiones SSH con notificación persistente
-  (perfiles conectados, nº de tabs); se para al desconectar todo.
-- **Notificación de permiso pendiente** cuando la app está en background
-  (tap → abre la app en ese tab). Badge ya existe en foreground.
-- **Keepalive SSH** (SSHJ `withHeartbeatInterval`) + detección de red caída
-  → estado "reconectando" con reintento exponencial, en vez de esperar al EOF.
-- **Claves con passphrase** (SSHJ ya lo soporta; falta pedir la passphrase al
-  conectar y no persistirla) — limitación arrastrada desde el pivote.
+- **Connection foreground service** (`connectedDeviceType`/`dataSync`):
+  keeps SSH connections alive with a persistent notification
+  (connected profiles, number of tabs); stops when everything disconnects.
+- **Pending-permission notification** when the app is in background
+  (tap → opens the app on that tab). Badge already exists in foreground.
+- **SSH keepalive** (SSHJ `withHeartbeatInterval`) + dropped-network detection
+  → a "reconnecting" state with exponential retry, instead of waiting for EOF.
+- **Passphrase-protected keys** (SSHJ already supports it; missing: asking for
+  the passphrase on connect and not persisting it) — a limitation carried over from the pivot.
 
-### Fase L — Chat: completar el protocolo
+### Phase L — Chat: completing the protocol
 
-- **Slash commands**: tipar `AvailableCommand` (hoy `JsonObject` crudo),
-  autocompletado al teclear `/` en el input.
-- **Modos de permiso** (`session/set_mode` + `current_mode_update`, que ya se
-  parsea): chip junto al selector de modelo (default/acceptEdits/bypass…).
-- **Contexto en prompts**: @-menciones de rutas remotas (`ContentBlock`
-  resource_link) y adjuntar imágenes si el agente reporta la capability.
-- **Historial `session/load`**: verificar contra agente real que el replay
-  se renderiza completo (burbujas de usuario incluidas); hoy solo está
-  cubierto por el reducer.
-- **Cancelación robusta**: revisar `stopReason=cancelled` y estados busy
-  huérfanos si el agente muere a mitad de turno.
+- **Slash commands**: type `AvailableCommand` (currently raw `JsonObject`),
+  autocomplete when typing `/` in the input.
+- **Permission modes** (`session/set_mode` + `current_mode_update`, already
+  parsed): a chip next to the model selector (default/acceptEdits/bypass…).
+- **Context in prompts**: @-mentions of remote paths (`ContentBlock`
+  resource_link) and attaching images if the agent reports the capability.
+- **`session/load` history**: verify against a real agent that the replay
+  renders fully (including user bubbles); today only covered by the reducer.
+- **Robust cancellation**: review `stopReason=cancelled` and orphaned busy
+  states if the agent dies mid-turn.
 
-### Fase M — Terminal: calidad de vida
+### Phase M — Terminal: quality of life
 
-- Scrollback UI (el emulador ya lo acumula en `TerminalBuffer.scrollback`).
-- Bracketed paste (el emulador ya expone `bracketedPaste`) y parpadeo de cursor.
-- Ratón (tmux `mouse on`) — opcional, al final.
+- Scrollback UI (the emulator already accumulates it in `TerminalBuffer.scrollback`).
+- Bracketed paste (the emulator already exposes `bracketedPaste`) and cursor blinking.
+- Mouse (tmux `mouse on`) — optional, last.
 
-### Fase N — Desktop y housekeeping
+### Phase N — Desktop and housekeeping
 
-- TOFU en desktop (mismo diálogo; store en `~/.config/acp-ssh-kmp/`).
-- Empaquetado desktop (Compose `packageDistributionForCurrentOS`).
-- Arreglar `TerminalEmulatorTest.wrapsAtLastColumn`.
-- README al día (el chat ACP ya no es "roadmap") + CI (GitHub Actions:
+- TOFU on desktop (same dialog; store at `~/.config/acp-ssh-kmp/`).
+- Desktop packaging (Compose `packageDistributionForCurrentOS`).
+- Fix `TerminalEmulatorTest.wrapsAtLastColumn`.
+- README up to date (ACP chat is no longer "roadmap") + CI (GitHub Actions:
   `desktopTest` + `assembleDebug`).
 
-### Orden recomendado
+### Recommended order
 
-J (por pasos, es lo que desbloquea el uso real que pide el usuario) → K
-(sin el foreground service la multi-conexión de J se cae en background) →
-L → M/N en cualquier orden. Housekeeping de N puede intercalarse cuando toque
-tocar cada zona.
+J (step by step, it's what unblocks the real usage the user asked for) → K
+(without the foreground service, J's multi-connection falls apart in background) →
+L → M/N in any order. N's housekeeping can be interleaved whenever each area is touched.
+</content>
+</invoke>
