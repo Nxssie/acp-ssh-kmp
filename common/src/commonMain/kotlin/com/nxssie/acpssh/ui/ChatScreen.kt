@@ -109,15 +109,22 @@ fun ChatScreen(host: AcpHost) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        ChatTabsRow(
-            tabs = tabs,
-            activeTabId = activeTabId,
-            onSelect = host::selectTab,
-            onClose = host::closeTab,
-            onNew = {
-                if (tabs.size >= host.maxTabs) limitNotice = true else host.openTab()
-            },
-        )
+        // Sin tabs NO se monta la barra: ScrollableTabRow indexa
+        // tabPositions[selectedTabIndex] en el indicador y con la lista vacía
+        // lanza IndexOutOfBoundsException — era el crash al cerrar el último
+        // tab (o "Cerrar y terminar agente") y, con mala suerte, al conectar
+        // antes de publicarse el primer tab.
+        if (tabs.isNotEmpty()) {
+            ChatTabsRow(
+                tabs = tabs,
+                activeTabId = activeTabId,
+                onSelect = host::selectTab,
+                onClose = host::closeTab,
+                onNew = {
+                    if (tabs.size >= host.maxTabs) limitNotice = true else host.openTab()
+                },
+            )
+        }
         if (tabs.isEmpty()) {
             // Cerrar/matar el último tab no desconecta (decisión cerrada #2):
             // `connection.status` sigue CONNECTED sin ningún tab que mostrar. Sin
