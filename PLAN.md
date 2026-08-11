@@ -875,3 +875,124 @@ con SDK y bugs encontrados/corregidos"); `:desktop:compileKotlinJvm` en verde.
 Sin Android SDK en este entorno: `:android:assembleDebug` y el smoke manual
 (selector de perfiles, gestor de claves/comandos, varios tabs de chat) quedan
 pendientes en una máquina con el SDK instalado, igual que en fases anteriores.
+
+## Replanning 2026-08-11 — hacia una app completa (override del alcance V1)
+
+> Estado: planificado con el usuario. **Override explícito de la decisión
+> cerrada #1 de 2026-08-10** ("perfil por tab: siempre el mismo") y del
+> "alcance deliberadamente fuera de V1" de la Fase I: el objetivo ahora SÍ es
+> poder tener, en pestañas paralelas, agentes ACP de perfiles distintos
+> (p. ej. `claude-code-acp` en una, `pi-acp` en otra) y también pestañas de
+> terminal, mezcladas. Las decisiones #2–#5 siguen vigentes.
+
+### Estado real de la app (auditoría 2026-08-11)
+
+Funciona: terminal PTY con emulador propio; chat ACP multi-tab (mismo perfil)
+con streaming, tool calls, diffs, plan, permisos, markdown; perfiles/claves/
+comandos guardados; persistencia y `session/load` de sesiones; "Sesiones del
+servidor" (retomar/matar huérfanos); selector de modelo/config options;
+auto-reconnect al arrancar. Bugs de crash arreglados hoy: `ScrollableTabRow`
+con lista vacía (cerrar último tab / matar agente) y cierre SSHJ del terminal
+en el hilo main.
+
+Huecos detectados:
+- **Arquitectura de tabs**: el modo Terminal/Chat es global (`App.kt`), una
+  conexión SSH por host (`AcpSessionManager.transport` único), un solo
+  emulador por `TerminalHost` — nada de esto soporta tabs heterogéneos.
+- **Android en background**: sin foreground service, el proceso muere y la
+  SSH con él (el auto-reconnect lo palia, no lo resuelve). Sin notificaciones
+  de permisos pendientes.
+- **Chat**: `available_commands_update` se parsea pero se descarta (sin UI de
+  slash commands); no hay `session/set_mode` (modos de permiso de
+  `claude-code-acp`); solo texto plano en prompts (sin adjuntos/imágenes ni
+  @-menciones).
+- **Terminal**: sin scrollback UI, sin claves con passphrase, sin mouse.
+- **Desktop**: sin TOFU (verifier promiscuo), sin empaquetado.
+- **Housekeeping**: `TerminalEmulatorTest.wrapsAtLastColumn` en rojo desde
+  hace fases; README describe el chat ACP como "roadmap" cuando ya existe;
+  sin CI.
+
+### Fase J — Workspace de tabs heterogéneos (la pieza grande)
+
+Un único modelo de pestañas por encima del modo:
+
+```kotlin
+sealed interface WorkspaceTab {
+    val tabId: String
+    val profileId: String
+    data class Chat(...) : WorkspaceTab      // envuelve la AcpTabState actual
+    data class Terminal(...) : WorkspaceTab  // TerminalEmulator + shell propios
+}
+```
+
+- **Pool de conexiones SSH** (`SshConnectionPool`, commonMain + factoría por
+  plataforma): mapa `profileId → conexión compartida` con refcount; tabs del
+  mismo perfil comparten conexión (como hoy), tabs de perfiles distintos abren
+  otra. Cerrar el último tab de un perfil libera su conexión. TOFU por
+  conexión (cola de pendientes, un diálogo a la vez).
+- **`WorkspaceManager`** (evolución de `AcpSessionManager`): deja de tener
+  `transport`/`connectedConfig` globales; cada tab resuelve su conexión contra
+  el pool. `AcpSessionManager` actual se conserva casi entero como la rama
+  Chat (runDirs, resume, epoch, remote sessions pasan a ser por-perfil).
+- **`TerminalHost` multi-instancia**: extraer de `AndroidSshTerminalHost` /
+  `DesktopSshTerminalHost` una `TerminalTabSession` (emulador + shell + write
+  loop por tab) sobre la conexión del pool. El host actual queda como caso
+  de un solo tab hasta que la UI migre.
+- **UI**: la barra de tabs sube a `App.kt` (por encima del `when(mode)`);
+  "+" abre un diálogo "nuevo tab" con selector de perfil (default: el del tab
+  activo) y tipo Chat/Terminal según el modo del comando del perfil.
+  `ChatScreen`/`TerminalScreen` pasan a ser contenido de tab.
+- **Persistencia**: `SavedTabSession` gana `profileId` y `type`; los tabs de
+  terminal no persisten sesión (tmux ya cubre eso), solo el tab.
+- **Migración por pasos** (cada uno compila y funciona solo): 1) pool de
+  conexiones detrás de `AcpSessionManager` sin cambiar UI; 2) perfil por tab
+  en chat; 3) tabs de terminal; 4) persistencia extendida.
+- Tope de tabs global (sigue el default 5, decisión #3) + tope de conexiones
+  simultáneas (sugerido: 3) con aviso.
+
+### Fase K — Robustez Android
+
+- **Foreground service de conexión** (`connectedDeviceType`/`dataSync`):
+  mantiene vivas las conexiones SSH con notificación persistente
+  (perfiles conectados, nº de tabs); se para al desconectar todo.
+- **Notificación de permiso pendiente** cuando la app está en background
+  (tap → abre la app en ese tab). Badge ya existe en foreground.
+- **Keepalive SSH** (SSHJ `withHeartbeatInterval`) + detección de red caída
+  → estado "reconectando" con reintento exponencial, en vez de esperar al EOF.
+- **Claves con passphrase** (SSHJ ya lo soporta; falta pedir la passphrase al
+  conectar y no persistirla) — limitación arrastrada desde el pivote.
+
+### Fase L — Chat: completar el protocolo
+
+- **Slash commands**: tipar `AvailableCommand` (hoy `JsonObject` crudo),
+  autocompletado al teclear `/` en el input.
+- **Modos de permiso** (`session/set_mode` + `current_mode_update`, que ya se
+  parsea): chip junto al selector de modelo (default/acceptEdits/bypass…).
+- **Contexto en prompts**: @-menciones de rutas remotas (`ContentBlock`
+  resource_link) y adjuntar imágenes si el agente reporta la capability.
+- **Historial `session/load`**: verificar contra agente real que el replay
+  se renderiza completo (burbujas de usuario incluidas); hoy solo está
+  cubierto por el reducer.
+- **Cancelación robusta**: revisar `stopReason=cancelled` y estados busy
+  huérfanos si el agente muere a mitad de turno.
+
+### Fase M — Terminal: calidad de vida
+
+- Scrollback UI (el emulador ya lo acumula en `TerminalBuffer.scrollback`).
+- Bracketed paste (el emulador ya expone `bracketedPaste`) y parpadeo de cursor.
+- Ratón (tmux `mouse on`) — opcional, al final.
+
+### Fase N — Desktop y housekeeping
+
+- TOFU en desktop (mismo diálogo; store en `~/.config/acp-ssh-kmp/`).
+- Empaquetado desktop (Compose `packageDistributionForCurrentOS`).
+- Arreglar `TerminalEmulatorTest.wrapsAtLastColumn`.
+- README al día (el chat ACP ya no es "roadmap") + CI (GitHub Actions:
+  `desktopTest` + `assembleDebug`).
+
+### Orden recomendado
+
+J (por pasos, es lo que desbloquea el uso real que pide el usuario) → K
+(sin el foreground service la multi-conexión de J se cae en background) →
+L → M/N en cualquier orden. Housekeeping de N puede intercalarse cuando toque
+tocar cada zona.
