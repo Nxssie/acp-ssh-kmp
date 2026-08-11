@@ -99,14 +99,45 @@ class SessionUpdateTest {
         assertIs<SessionUpdate.CurrentModeUpdate>(
             update("""{"sessionUpdate":"current_mode_update","currentModeId":"default"}"""),
         )
-        assertIs<SessionUpdate.ConfigOptionUpdate>(
-            update("""{"sessionUpdate":"config_option_update","configOption":{"id":"mode"}}"""),
-        )
         assertIs<SessionUpdate.SessionInfoUpdate>(
             update("""{"sessionUpdate":"session_info_update","info":{"title":"x"}}"""),
         )
         assertIs<SessionUpdate.UsageUpdate>(
             update("""{"sessionUpdate":"usage_update","usage":{"totalTokens":10}}"""),
         )
+    }
+
+    /**
+     * El spec (confirmado contra `agentclientprotocol.com/protocol/v1/session-config-options`
+     * y contra la fuente real de `pi-acp`, que es quien expone esto hoy —
+     * modelo y nivel de "thinking") manda la clave PLURAL `configOptions` con
+     * el array completo, no un `configOption` singular.
+     */
+    @Test
+    fun configOptionUpdateParsesFullTypedList() {
+        val u = update(
+            """{"sessionUpdate":"config_option_update","configOptions":[
+                {"id":"model","name":"Model","description":"Select the model for this session","category":"model",
+                 "type":"select","currentValue":"anthropic/claude-sonnet-5",
+                 "options":[{"value":"anthropic/claude-sonnet-5","name":"anthropic/claude-sonnet-5","description":null},
+                            {"value":"openai/gpt-5","name":"openai/gpt-5"}]}
+            ]}""",
+        )
+        val configUpdate = assertIs<SessionUpdate.ConfigOptionUpdate>(u)
+        assertEquals(1, configUpdate.configOptions.size)
+        val model = configUpdate.configOptions.single()
+        assertEquals("model", model.id)
+        assertEquals("Model", model.name)
+        assertEquals("select", model.type)
+        assertEquals("anthropic/claude-sonnet-5", model.currentValue)
+        assertEquals(2, model.options.size)
+        assertEquals("openai/gpt-5", model.options[1].value)
+    }
+
+    @Test
+    fun configOptionUpdateWithMissingArrayIsEmptyNotBroken() {
+        val u = update("""{"sessionUpdate":"config_option_update"}""")
+        val configUpdate = assertIs<SessionUpdate.ConfigOptionUpdate>(u)
+        assertTrue(configUpdate.configOptions.isEmpty())
     }
 }

@@ -4,6 +4,7 @@ import com.nxssie.acpssh.acp.AcpPlan
 import com.nxssie.acpssh.acp.AcpPrettyJson
 import com.nxssie.acpssh.acp.AcpToolCall
 import com.nxssie.acpssh.acp.AcpToolCallUpdate
+import com.nxssie.acpssh.acp.ConfigOption
 import com.nxssie.acpssh.acp.ContentBlock
 import com.nxssie.acpssh.acp.PermissionRequest
 import com.nxssie.acpssh.acp.SessionUpdate
@@ -74,6 +75,8 @@ data class AcpSessionState(
     /** Orden real de aparición de [messages]/[toolCalls], para renderizarlos intercalados. */
     val timeline: List<TimelineRef> = emptyList(),
     val plan: List<PlanEntryUi> = emptyList(),
+    /** Config options de la sesión (p. ej. modelo/thinking en `pi-acp`), ver [ConfigOption]. */
+    val configOptions: List<ConfigOption> = emptyList(),
     val pendingPermission: PermissionUi? = null,
     /** Un turno (prompt) en vuelo: el input se bloquea y se muestra cancelar. */
     val busy: Boolean = false,
@@ -91,8 +94,13 @@ class AcpSessionStore {
     private val _state = MutableStateFlow(AcpSessionState())
     val state: StateFlow<AcpSessionState> = _state
 
-    fun onSessionStarted(agentName: String?, sessionId: String) {
-        _state.update { it.copy(agentName = agentName, sessionId = sessionId, error = null) }
+    fun onSessionStarted(agentName: String?, sessionId: String, configOptions: List<ConfigOption> = emptyList()) {
+        _state.update { it.copy(agentName = agentName, sessionId = sessionId, error = null, configOptions = configOptions) }
+    }
+
+    /** Config options actualizadas (respuesta de `session/set_config_option`, o `config_option_update`). */
+    fun onConfigOptions(options: List<ConfigOption>) {
+        _state.update { it.copy(configOptions = options) }
     }
 
     fun onUpdate(update: SessionUpdate) {
@@ -115,8 +123,9 @@ class AcpSessionStore {
                 is SessionUpdate.Plan -> state.copy(
                     plan = update.plan.entries.map { PlanEntryUi(it.content, it.status) },
                 )
-                // Modo, configuración, comandos disponibles, uso: la v1 del
-                // chat no los renderiza; se ignoran sin romper la sesión.
+                is SessionUpdate.ConfigOptionUpdate -> state.copy(configOptions = update.configOptions)
+                // Modo, comandos disponibles, uso: la v1 del chat no los
+                // renderiza; se ignoran sin romper la sesión.
                 else -> state
             }
         }

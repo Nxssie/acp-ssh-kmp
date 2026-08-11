@@ -69,4 +69,7 @@ interface AcpHost : HasConnection {
 
     /** Termina un runDir del host, esté o no abierto como tab aquí. */
     fun killRemoteSession(dirName: String)
+
+    /** Cambia un config option (p. ej. modelo/thinking) del tab activo. */
+    fun setConfigOption(configId: String, value: String)
 }

@@ -226,4 +226,41 @@ class AcpSessionStoreTest {
         SessionUpdate.AgentMessageChunk(
             ContentChunk(content = ContentBlock.Text(text), messageId = messageId),
         )
+
+    @Test
+    fun onSessionStartedSeedsConfigOptions() {
+        val store = AcpSessionStore()
+        val model = com.nxssie.acpssh.acp.ConfigOption(
+            id = "model", name = "Model", description = null, category = "model",
+            type = "select", currentValue = "anthropic/claude-sonnet-5", options = emptyList(),
+        )
+        store.onSessionStarted(agentName = "pi", sessionId = "sess-1", configOptions = listOf(model))
+        assertEquals(listOf(model), store.state.value.configOptions)
+    }
+
+    @Test
+    fun configOptionUpdateReplacesConfigOptions() {
+        val store = AcpSessionStore()
+        val stale = com.nxssie.acpssh.acp.ConfigOption(
+            id = "model", name = "Model", description = null, category = null,
+            type = "select", currentValue = "old", options = emptyList(),
+        )
+        store.onSessionStarted(agentName = "pi", sessionId = "sess-1", configOptions = listOf(stale))
+
+        val fresh = stale.copy(currentValue = "new")
+        store.onUpdate(SessionUpdate.ConfigOptionUpdate(listOf(fresh)))
+
+        assertEquals(listOf(fresh), store.state.value.configOptions)
+    }
+
+    @Test
+    fun onConfigOptionsReplacesConfigOptionsDirectly() {
+        val store = AcpSessionStore()
+        val option = com.nxssie.acpssh.acp.ConfigOption(
+            id = "thought_level", name = "Thinking", description = null, category = null,
+            type = "select", currentValue = "medium", options = emptyList(),
+        )
+        store.onConfigOptions(listOf(option))
+        assertEquals(listOf(option), store.state.value.configOptions)
+    }
 }

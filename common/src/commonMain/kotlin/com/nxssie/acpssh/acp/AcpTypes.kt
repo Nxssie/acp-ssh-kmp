@@ -66,6 +66,15 @@ data class PromptParams(val sessionId: String, val prompt: JsonElement)
 @Serializable
 data class SessionIdParams(val sessionId: String)
 
+/**
+ * `session/set_config_option`. El spec permite `value: string | boolean`,
+ * pero `pi-acp` (el único agente real que expone config options hoy)
+ * rechaza cualquier valor que no sea string (`typeof params.value !== "string"`
+ * en su fuente) — recorte deliberado, no una omisión del spec completo.
+ */
+@Serializable
+data class SetConfigOptionParams(val sessionId: String, val configId: String, val value: String)
+
 /** Respuesta del cliente a `session/request_permission` (outcome del spec). */
 sealed interface PermissionOutcome {
     data class Selected(val optionId: String) : PermissionOutcome
@@ -97,8 +106,60 @@ data class InitializeResult(
 data class NewSessionResult(
     val sessionId: String,
     val modes: JsonObject?,
-    val configOptions: List<JsonObject>?,
+    val configOptions: List<ConfigOption>?,
 )
+
+/**
+ * Un valor seleccionable de un [ConfigOption] de tipo `select` (p. ej. un
+ * modelo concreto o un nivel de "thinking").
+ */
+data class ConfigOptionValue(val value: String, val name: String, val description: String?) {
+    companion object {
+        fun from(obj: JsonObject?): ConfigOptionValue {
+            val raw = obj ?: JsonObject(emptyMap())
+            val value = raw["value"]?.jsonPrimitive?.contentOrNull ?: ""
+            return ConfigOptionValue(
+                value = value,
+                name = raw["name"]?.jsonPrimitive?.contentOrNull ?: value,
+                description = raw["description"]?.jsonPrimitive?.contentOrNull,
+            )
+        }
+    }
+}
+
+/**
+ * Config option de sesión (`NewSessionResult.configOptions`,
+ * `session/update` tag `config_option_update`): mecanismo genérico del spec
+ * que agentes como `pi-acp` usan para exponer, por ejemplo, selección de
+ * modelo o nivel de razonamiento. `currentValue` se lee como string aunque
+ * el wire mande un boolean (`type == "boolean"`) — `jsonPrimitive.content`
+ * da la representación textual en ambos casos, sin necesitar un tipo sellado.
+ */
+data class ConfigOption(
+    val id: String,
+    val name: String,
+    val description: String?,
+    val category: String?,
+    val type: String,
+    val currentValue: String?,
+    val options: List<ConfigOptionValue>,
+) {
+    companion object {
+        fun from(obj: JsonObject?): ConfigOption {
+            val raw = obj ?: JsonObject(emptyMap())
+            return ConfigOption(
+                id = raw["id"]?.jsonPrimitive?.contentOrNull ?: "",
+                name = raw["name"]?.jsonPrimitive?.contentOrNull ?: "",
+                description = raw["description"]?.jsonPrimitive?.contentOrNull,
+                category = raw["category"]?.jsonPrimitive?.contentOrNull,
+                type = raw["type"]?.jsonPrimitive?.contentOrNull ?: "select",
+                currentValue = raw["currentValue"]?.jsonPrimitive?.contentOrNull,
+                options = raw["options"]?.jsonArray?.mapNotNull { it.jsonObjectOrNull()?.let(ConfigOptionValue::from) }
+                    ?: emptyList(),
+            )
+        }
+    }
+}
 
 /** Resultado de `session/prompt` (fin de turno). */
 data class PromptResult(
@@ -128,7 +189,7 @@ sealed interface SessionUpdate {
     data class Plan(val plan: AcpPlan) : SessionUpdate
     data class AvailableCommandsUpdate(val commands: List<JsonObject>) : SessionUpdate
     data class CurrentModeUpdate(val modeId: String) : SessionUpdate
-    data class ConfigOptionUpdate(val configOption: JsonObject) : SessionUpdate
+    data class ConfigOptionUpdate(val configOptions: List<ConfigOption>) : SessionUpdate
     data class SessionInfoUpdate(val info: JsonObject) : SessionUpdate
     data class UsageUpdate(val usage: JsonObject) : SessionUpdate
     data class Unknown(val tag: String, val raw: JsonObject) : SessionUpdate
@@ -145,7 +206,11 @@ sealed interface SessionUpdate {
                 update["availableCommands"]?.jsonArray?.mapNotNull { it.jsonObjectOrNull() } ?: emptyList(),
             )
             "current_mode_update" -> CurrentModeUpdate(update["currentModeId"]?.jsonPrimitive?.contentOrNull ?: "")
-            "config_option_update" -> ConfigOptionUpdate(update["configOption"]?.jsonObjectOrNull() ?: JsonObject(emptyMap()))
+            // El spec (y `pi-acp`, verificado contra su fuente) manda la clave
+            // PLURAL con el array completo, no un `configOption` singular.
+            "config_option_update" -> ConfigOptionUpdate(
+                update["configOptions"]?.jsonArray?.mapNotNull { it.jsonObjectOrNull()?.let(ConfigOption::from) } ?: emptyList(),
+            )
             "session_info_update" -> SessionInfoUpdate(update["info"]?.jsonObjectOrNull() ?: JsonObject(emptyMap()))
             "usage_update" -> UsageUpdate(update["usage"]?.jsonObjectOrNull() ?: JsonObject(emptyMap()))
             else -> Unknown(tag ?: "", update)

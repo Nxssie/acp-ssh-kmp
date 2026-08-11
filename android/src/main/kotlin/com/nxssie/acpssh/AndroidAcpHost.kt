@@ -71,6 +71,7 @@ class AndroidAcpHost(context: Context, profileStore: ProfileStore) : AcpHost {
     override fun refreshRemoteSessions() = manager.refreshRemoteSessions()
     override fun attachRemoteSession(dirName: String) = manager.attachRemoteSession(dirName)
     override fun killRemoteSession(dirName: String) = manager.killRemoteSession(dirName)
+    override fun setConfigOption(configId: String, value: String) = manager.setConfigOption(configId, value)
 
     private class AndroidAcpTransport(private val ssh: SSHClient) : AcpExecTransport {
         override suspend fun exec(command: String): RawByteChannel = withContext(Dispatchers.IO) {

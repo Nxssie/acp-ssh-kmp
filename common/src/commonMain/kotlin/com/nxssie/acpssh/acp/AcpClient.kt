@@ -97,7 +97,7 @@ class AcpClient(
         NewSessionResult(
             sessionId = obj?.str("sessionId") ?: "",
             modes = obj?.get("modes") as? JsonObject,
-            configOptions = (obj?.get("configOptions") as? JsonArray)?.mapNotNull { it as? JsonObject },
+            configOptions = (obj?.get("configOptions") as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(ConfigOption::from) },
         )
     }
 
@@ -112,7 +112,7 @@ class AcpClient(
             NewSessionResult(
                 sessionId = sessionId,
                 modes = obj?.get("modes") as? JsonObject,
-                configOptions = (obj?.get("configOptions") as? JsonArray)?.mapNotNull { it as? JsonObject },
+                configOptions = (obj?.get("configOptions") as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(ConfigOption::from) },
             )
         }
 
@@ -151,6 +151,19 @@ class AcpClient(
     suspend fun cancel(sessionId: String) {
         framer.writeLine(RpcOut.notification("session/cancel", encodeToJson(SessionIdParams(sessionId))))
     }
+
+    /**
+     * Cambia un [ConfigOption] de la sesión (p. ej. modelo o nivel de
+     * "thinking" en `pi-acp`); el agente responde con la lista actualizada,
+     * que además suele mandar por separado como `config_option_update`
+     * (ver [SessionUpdate.ConfigOptionUpdate]) — ambos caminos actualizan lo
+     * mismo, no hace falta elegir uno.
+     */
+    suspend fun setConfigOption(sessionId: String, configId: String, value: String): List<ConfigOption> =
+        request("session/set_config_option", encodeToJson(SetConfigOptionParams(sessionId, configId, value))) { result ->
+            (result?.jsonObjectOrNull()?.get("configOptions") as? JsonArray)
+                ?.mapNotNull { (it as? JsonObject)?.let(ConfigOption::from) } ?: emptyList()
+        }
 
     /** Responde a un [request] de permiso pendiente con la decisión del usuario. */
     suspend fun respondPermission(request: PermissionRequest, outcome: PermissionOutcome) {

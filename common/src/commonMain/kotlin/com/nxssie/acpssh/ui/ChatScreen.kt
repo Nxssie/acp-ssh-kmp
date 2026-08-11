@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -69,6 +70,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nxssie.acpssh.acp.ConfigOption
 import com.nxssie.acpssh.acp.PermissionOutcome
 import com.nxssie.acpssh.acp.PermissionRequest
 import com.nxssie.acpssh.acp.ToolCallStatus
@@ -116,7 +118,33 @@ fun ChatScreen(host: AcpHost) {
                 if (tabs.size >= host.maxTabs) limitNotice = true else host.openTab()
             },
         )
-        if (active == null) {
+        if (tabs.isEmpty()) {
+            // Cerrar/matar el último tab no desconecta (decisión cerrada #2):
+            // `connection.status` sigue CONNECTED sin ningún tab que mostrar. Sin
+            // este estado, la app se quedaba en el spinner de abajo para siempre —
+            // "Salir" vive dentro de la cabecera del tab activo, que aquí no existe.
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "Sin tabs abiertos",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = host::openTab) { Text("Nuevo tab") }
+                        OutlinedButton(onClick = host::disconnect) {
+                            Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Salir")
+                        }
+                    }
+                }
+            }
+        } else if (active == null) {
+            // Tab recién creado, todavía sin publicar en `tabs` (ventana muy
+            // breve tras openTab/attachRemoteSession): a diferencia de arriba,
+            // esto se resuelve solo en el próximo tick, no hace falta salida.
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
@@ -132,6 +160,7 @@ fun ChatScreen(host: AcpHost) {
                     onCloseTab = { host.closeTab(active.tabId) },
                     onKillAgent = { host.killTabAgent(active.tabId) },
                     onShowRemoteSessions = { showRemoteSessions = true },
+                    onSetConfigOption = host::setConfigOption,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -210,6 +239,7 @@ private fun ChatContent(
     onCloseTab: () -> Unit,
     onKillAgent: () -> Unit,
     onShowRemoteSessions: () -> Unit,
+    onSetConfigOption: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -241,6 +271,11 @@ private fun ChatContent(
 
     Column(modifier.fillMaxWidth()) {
         ChatHeader(state, onDisconnect, onCloseTab, onKillAgent, onShowRemoteSessions)
+
+        val configOptions = state.configOptions.filter { it.id.isNotBlank() }
+        if (configOptions.isNotEmpty()) {
+            ConfigOptionsRow(configOptions, onSetConfigOption)
+        }
 
         if (state.error != null && state.sessionId == null) {
             // El tab no consiguió arrancar (agente no instalado, handshake agotado).
@@ -304,6 +339,50 @@ private fun ChatContent(
             },
             onCancel = onCancelTurn,
         )
+    }
+}
+
+/**
+ * Fila de config options de la sesión (p. ej. "Model"/"Thinking" en
+ * `pi-acp`, ver [ConfigOption]): mecanismo genérico del spec ACP, así que se
+ * pinta uno por cada opción que el agente anuncie, sin asumir cuáles existen.
+ */
+@Composable
+private fun ConfigOptionsRow(options: List<ConfigOption>, onSelect: (String, String) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        options.forEach { option -> ConfigOptionChip(option, onSelect) }
+    }
+}
+
+@Composable
+private fun ConfigOptionChip(option: ConfigOption, onSelect: (String, String) -> Unit) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val currentLabel = option.options.firstOrNull { it.value == option.currentValue }?.name
+        ?: option.currentValue ?: option.name
+    Box {
+        AssistChip(
+            onClick = { if (option.options.isNotEmpty()) menuOpen = true },
+            label = {
+                Text("${option.name}: $currentLabel", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            },
+        )
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            option.options.forEach { value ->
+                DropdownMenuItem(
+                    text = { Text(value.name) },
+                    onClick = {
+                        menuOpen = false
+                        onSelect(option.id, value.value)
+                    },
+                )
+            }
+        }
     }
 }
 

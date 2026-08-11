@@ -336,6 +336,7 @@ class AcpSessionManager(
             store.onSessionStarted(
                 agentName = result.initialize.agentTitle ?: result.initialize.agentName,
                 sessionId = result.newSession.sessionId,
+                configOptions = result.newSession.configOptions ?: emptyList(),
             )
             val cwd = session.resolvedCwd
             if (cwd != null) {
@@ -464,6 +465,23 @@ class AcpSessionManager(
     fun toggleToolCall(id: String) {
         scope.launch {
             mutex.withLock { entries[_activeTabId.value] }?.store?.toggleToolCall(id)
+        }
+    }
+
+    /**
+     * Cambia un config option (p. ej. modelo/thinking en `pi-acp`) del tab
+     * activo. La respuesta del agente ya trae la lista actualizada; si además
+     * llega por `config_option_update` (algunos agentes mandan ambos), el
+     * reducer lo aplica igual — no hace falta elegir un solo camino.
+     */
+    fun setConfigOption(configId: String, value: String) {
+        scope.launch {
+            val entry = mutex.withLock { entries[_activeTabId.value] } ?: return@launch
+            val client = entry.client ?: return@launch
+            val sessionId = entry.store.state.value.sessionId ?: return@launch
+            runCatching { client.setConfigOption(sessionId, configId, value) }
+                .onSuccess { entry.store.onConfigOptions(it) }
+                .onFailure { entry.store.onError(it.message ?: it.toString()) }
         }
     }
 

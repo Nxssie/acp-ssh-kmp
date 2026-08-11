@@ -268,6 +268,62 @@ class AcpClientTest {
         }
     }
 
+    /** `configOptions` real de `pi-acp` (modelo + nivel de "thinking"), ya tipado. */
+    @Test
+    fun newSessionParsesTypedConfigOptions() = runBlocking {
+        val channel = QueueChannel()
+        val (client, scope) = client(channel)
+        try {
+            val sessionDeferred = async { withTimeout(5_000) { client.newSession("/tmp") } }
+            while (!channel.written.contains("\"method\":\"session/new\"")) kotlinx.coroutines.delay(5)
+            // Una sola línea NDJSON: un salto de línea real aquí partiría el
+            // mensaje en dos "líneas" para el framer (ver [QueueChannel.send]).
+            channel.send(
+                """{"jsonrpc":"2.0","id":1,"result":{"sessionId":"sess-1","modes":null,"configOptions":[""" +
+                    """{"id":"model","name":"Model","type":"select","currentValue":"anthropic/claude-sonnet-5",""" +
+                    """"options":[{"value":"anthropic/claude-sonnet-5","name":"anthropic/claude-sonnet-5"}]},""" +
+                    """{"id":"thought_level","name":"Thinking","category":"thought_level","type":"select","currentValue":"medium",""" +
+                    """"options":[{"value":"off","name":"Thinking: off"},{"value":"medium","name":"Thinking: medium"}]}""" +
+                    """]}}""",
+            )
+            val result = sessionDeferred.await()
+            assertEquals(2, result.configOptions?.size)
+            val model = result.configOptions!!.first { it.id == "model" }
+            assertEquals("anthropic/claude-sonnet-5", model.currentValue)
+            assertEquals(1, model.options.size)
+            val thinking = result.configOptions!!.first { it.id == "thought_level" }
+            assertEquals("medium", thinking.currentValue)
+            assertEquals(2, thinking.options.size)
+        } finally {
+            client.close()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun setConfigOptionSendsConfigIdAndValueAndParsesUpdatedList() = runBlocking {
+        val channel = QueueChannel()
+        val (client, scope) = client(channel)
+        try {
+            val resultDeferred = async { withTimeout(5_000) { client.setConfigOption("sess-1", "model", "openai/gpt-5") } }
+            while (!channel.written.contains("\"method\":\"session/set_config_option\"")) kotlinx.coroutines.delay(5)
+            assertTrue(channel.written.contains("\"sessionId\":\"sess-1\""))
+            assertTrue(channel.written.contains("\"configId\":\"model\""))
+            assertTrue(channel.written.contains("\"value\":\"openai/gpt-5\""))
+
+            val id = Regex("\"id\":(\\d+),\"method\":\"session/set_config_option\"").find(channel.written)!!.groupValues[1]
+            channel.send(
+                """{"jsonrpc":"2.0","id":$id,"result":{"configOptions":[""" +
+                    """{"id":"model","name":"Model","type":"select","currentValue":"openai/gpt-5","options":[]}]}}""",
+            )
+            val configOptions = resultDeferred.await()
+            assertEquals("openai/gpt-5", configOptions.single().currentValue)
+        } finally {
+            client.close()
+            scope.cancel()
+        }
+    }
+
     /**
      * Reproduce el crash reportado al cerrar un tab / matar el agente: SSHJ
      * traduce la interrupción del hilo de lectura en `InterruptedIOException`
