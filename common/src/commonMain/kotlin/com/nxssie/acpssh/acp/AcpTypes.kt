@@ -89,6 +89,16 @@ data class SetConfigOptionParams(val sessionId: String, val configId: String, va
 @Serializable
 data class SetSessionModelParams(val sessionId: String, val modelId: String)
 
+/**
+ * `session/set_mode` — mecanismo ESTABLE del spec para los modos de sesión
+ * (en `claude-code-acp`: default/plan/acceptEdits/bypassPermissions). La
+ * respuesta no trae payload útil (solo `_meta`): el cliente actualiza su
+ * estado de forma optimista; si otro cliente lo cambia, llega como
+ * notificación `current_mode_update` (ya parseada en [SessionUpdate]).
+ */
+@Serializable
+data class SetSessionModeParams(val sessionId: String, val modeId: String)
+
 /** Respuesta del cliente a `session/request_permission` (outcome del spec). */
 sealed interface PermissionOutcome {
     data class Selected(val optionId: String) : PermissionOutcome
@@ -119,10 +129,45 @@ data class InitializeResult(
 /** Resultado de `session/new`. */
 data class NewSessionResult(
     val sessionId: String,
-    val modes: JsonObject?,
+    val modes: SessionModeState?,
     val configOptions: List<ConfigOption>?,
     val models: SessionModelState?,
 )
+
+/** Un modo disponible dentro de [SessionModeState] (p. ej. "plan", "acceptEdits"). */
+data class ModeInfo(val id: String, val name: String, val description: String?) {
+    companion object {
+        fun from(obj: JsonObject?): ModeInfo {
+            val raw = obj ?: JsonObject(emptyMap())
+            val id = raw["id"]?.jsonPrimitive?.contentOrNull ?: ""
+            return ModeInfo(
+                id = id,
+                name = raw["name"]?.jsonPrimitive?.contentOrNull ?: id,
+                description = raw["description"]?.jsonPrimitive?.contentOrNull,
+            )
+        }
+    }
+}
+
+/**
+ * `NewSessionResult.modes` (mecanismo estable del spec): modo de sesión activo
+ * y disponibles. `claude-code-acp` los usa para los modos de permiso
+ * (default/plan/acceptEdits/bypassPermissions); un cambio hecho por el agente
+ * u otro cliente llega como `current_mode_update`.
+ */
+data class SessionModeState(val availableModes: List<ModeInfo>, val currentModeId: String) {
+    companion object {
+        fun from(obj: JsonObject?): SessionModeState? {
+            val raw = obj ?: return null
+            val currentModeId = raw["currentModeId"]?.jsonPrimitive?.contentOrNull ?: return null
+            return SessionModeState(
+                availableModes = raw["availableModes"]?.jsonArray?.mapNotNull { it.jsonObjectOrNull()?.let(ModeInfo::from) }
+                    ?: emptyList(),
+                currentModeId = currentModeId,
+            )
+        }
+    }
+}
 
 /** Un modelo disponible dentro de [SessionModelState]. */
 data class ModelInfo(val modelId: String, val name: String, val description: String?) {

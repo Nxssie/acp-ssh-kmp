@@ -75,4 +75,7 @@ interface AcpHost : HasConnection {
 
     /** Cambia el modelo activo del tab activo (mecanismo UNSTABLE de `claude-code-acp`). */
     fun setModel(modelId: String)
+
+    /** Cambia el modo de sesión del tab activo (`session/set_mode`: plan/acceptEdits/…). */
+    fun setMode(modeId: String)
 }

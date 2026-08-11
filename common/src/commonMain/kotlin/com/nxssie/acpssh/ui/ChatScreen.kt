@@ -72,6 +72,7 @@ import androidx.compose.ui.unit.sp
 import com.nxssie.acpssh.acp.ConfigOption
 import com.nxssie.acpssh.acp.PermissionOutcome
 import com.nxssie.acpssh.acp.PermissionRequest
+import com.nxssie.acpssh.acp.SessionModeState
 import com.nxssie.acpssh.acp.SessionModelState
 import com.nxssie.acpssh.acp.ToolCallStatus
 import com.nxssie.acpssh.diff.UnifiedDiff
@@ -169,6 +170,7 @@ fun ChatScreen(host: AcpHost) {
                     onShowRemoteSessions = { showRemoteSessions = true },
                     onSetConfigOption = host::setConfigOption,
                     onSetModel = host::setModel,
+                    onSetMode = host::setMode,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -249,6 +251,7 @@ private fun ChatContent(
     onShowRemoteSessions: () -> Unit,
     onSetConfigOption: (String, String) -> Unit,
     onSetModel: (String) -> Unit,
+    onSetMode: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -282,8 +285,8 @@ private fun ChatContent(
         ChatHeader(state, onDisconnect, onCloseTab, onKillAgent, onShowRemoteSessions)
 
         val configOptions = state.configOptions.filter { it.id.isNotBlank() }
-        if (configOptions.isNotEmpty() || state.modelState != null) {
-            ConfigOptionsRow(configOptions, state.modelState, onSetConfigOption, onSetModel)
+        if (configOptions.isNotEmpty() || state.modelState != null || state.modeState != null) {
+            ConfigOptionsRow(configOptions, state.modelState, state.modeState, onSetConfigOption, onSetModel, onSetMode)
         }
 
         if (state.error != null && state.sessionId == null) {
@@ -361,8 +364,10 @@ private fun ChatContent(
 private fun ConfigOptionsRow(
     options: List<ConfigOption>,
     modelState: SessionModelState?,
+    modeState: SessionModeState?,
     onSelectOption: (String, String) -> Unit,
     onSelectModel: (String) -> Unit,
+    onSelectMode: (String) -> Unit,
 ) {
     Row(
         Modifier
@@ -371,8 +376,34 @@ private fun ConfigOptionsRow(
             .padding(horizontal = 12.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        modeState?.let { ModeChip(it, onSelectMode) }
         modelState?.let { ModelChip(it, onSelectModel) }
         options.forEach { option -> ConfigOptionChip(option, onSelectOption) }
+    }
+}
+
+/** Modo de sesión (plan/acceptEdits/…): mismo patrón de chip+menú que [ModelChip]. */
+@Composable
+private fun ModeChip(state: SessionModeState, onSelect: (String) -> Unit) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val currentLabel = state.availableModes.firstOrNull { it.id == state.currentModeId }?.name
+        ?: state.currentModeId
+    Box {
+        AssistChip(
+            onClick = { if (state.availableModes.isNotEmpty()) menuOpen = true },
+            label = { Text("Modo: $currentLabel", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        )
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            state.availableModes.forEach { mode ->
+                DropdownMenuItem(
+                    text = { Text(mode.name) },
+                    onClick = {
+                        menuOpen = false
+                        onSelect(mode.id)
+                    },
+                )
+            }
+        }
     }
 }
 

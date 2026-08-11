@@ -338,6 +338,7 @@ class AcpSessionManager(
                 sessionId = result.newSession.sessionId,
                 configOptions = result.newSession.configOptions ?: emptyList(),
                 modelState = result.newSession.models,
+                modeState = result.newSession.modes,
             )
             val cwd = session.resolvedCwd
             if (cwd != null) {
@@ -497,6 +498,23 @@ class AcpSessionManager(
             val sessionId = entry.store.state.value.sessionId ?: return@launch
             runCatching { client.setModel(sessionId, modelId) }
                 .onSuccess { entry.store.onModelSelected(modelId) }
+                .onFailure { entry.store.onError(it.message ?: it.toString()) }
+        }
+    }
+
+    /**
+     * Cambia el modo de sesión del tab activo (`session/set_mode`, estable en
+     * el spec; en `claude-code-acp`: default/plan/acceptEdits/bypass). Mismo
+     * patrón optimista que [setModel]; los cambios que haga el propio agente
+     * llegan como `current_mode_update` y los aplica el reducer.
+     */
+    fun setMode(modeId: String) {
+        scope.launch {
+            val entry = mutex.withLock { entries[_activeTabId.value] } ?: return@launch
+            val client = entry.client ?: return@launch
+            val sessionId = entry.store.state.value.sessionId ?: return@launch
+            runCatching { client.setMode(sessionId, modeId) }
+                .onSuccess { entry.store.onModeSelected(modeId) }
                 .onFailure { entry.store.onError(it.message ?: it.toString()) }
         }
     }

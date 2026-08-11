@@ -96,7 +96,7 @@ class AcpClient(
         val obj = result?.jsonObjectOrNull()
         NewSessionResult(
             sessionId = obj?.str("sessionId") ?: "",
-            modes = obj?.get("modes") as? JsonObject,
+            modes = SessionModeState.from(obj?.get("modes") as? JsonObject),
             configOptions = (obj?.get("configOptions") as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(ConfigOption::from) },
             models = SessionModelState.from(obj?.get("models") as? JsonObject),
         )
@@ -112,7 +112,7 @@ class AcpClient(
             val obj = result?.jsonObjectOrNull()
             NewSessionResult(
                 sessionId = sessionId,
-                modes = obj?.get("modes") as? JsonObject,
+                modes = SessionModeState.from(obj?.get("modes") as? JsonObject),
                 configOptions = (obj?.get("configOptions") as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(ConfigOption::from) },
                 models = SessionModelState.from(obj?.get("models") as? JsonObject),
             )
@@ -175,6 +175,16 @@ class AcpClient(
      */
     suspend fun setModel(sessionId: String, modelId: String) {
         request("session/set_model", encodeToJson(SetSessionModelParams(sessionId, modelId))) {}
+    }
+
+    /**
+     * Cambia el modo de sesión (`session/set_mode`, estable en el spec; en
+     * `claude-code-acp` son los modos de permiso: default/plan/acceptEdits/
+     * bypassPermissions). Respuesta sin payload útil — actualización optimista
+     * del llamador; los cambios ajenos llegan como `current_mode_update`.
+     */
+    suspend fun setMode(sessionId: String, modeId: String) {
+        request("session/set_mode", encodeToJson(SetSessionModeParams(sessionId, modeId))) {}
     }
 
     /** Responde a un [request] de permiso pendiente con la decisión del usuario. */

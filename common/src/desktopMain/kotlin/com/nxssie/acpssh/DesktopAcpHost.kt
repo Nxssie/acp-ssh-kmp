@@ -67,6 +67,7 @@ class DesktopAcpHost(profileStore: ProfileStore) : AcpHost {
     override fun killRemoteSession(dirName: String) = manager.killRemoteSession(dirName)
     override fun setConfigOption(configId: String, value: String) = manager.setConfigOption(configId, value)
     override fun setModel(modelId: String) = manager.setModel(modelId)
+    override fun setMode(modeId: String) = manager.setMode(modeId)
 
     private class DesktopAcpTransport(private val ssh: SshSession) : AcpExecTransport {
         override suspend fun exec(command: String): RawByteChannel = ssh.exec(command).asRawByteChannel()

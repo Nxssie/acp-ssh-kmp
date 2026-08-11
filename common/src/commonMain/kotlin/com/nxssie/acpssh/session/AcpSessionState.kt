@@ -7,6 +7,7 @@ import com.nxssie.acpssh.acp.AcpToolCallUpdate
 import com.nxssie.acpssh.acp.ConfigOption
 import com.nxssie.acpssh.acp.ContentBlock
 import com.nxssie.acpssh.acp.PermissionRequest
+import com.nxssie.acpssh.acp.SessionModeState
 import com.nxssie.acpssh.acp.SessionModelState
 import com.nxssie.acpssh.acp.SessionUpdate
 import com.nxssie.acpssh.acp.ToolCallContent
@@ -80,6 +81,8 @@ data class AcpSessionState(
     val configOptions: List<ConfigOption> = emptyList(),
     /** Modelo activo/disponibles vía el mecanismo UNSTABLE de `claude-code-acp`, ver [SessionModelState]. */
     val modelState: SessionModelState? = null,
+    /** Modo de sesión activo/disponibles (plan/acceptEdits/…), ver [SessionModeState]. */
+    val modeState: SessionModeState? = null,
     val pendingPermission: PermissionUi? = null,
     /** Un turno (prompt) en vuelo: el input se bloquea y se muestra cancelar. */
     val busy: Boolean = false,
@@ -102,6 +105,7 @@ class AcpSessionStore {
         sessionId: String,
         configOptions: List<ConfigOption> = emptyList(),
         modelState: SessionModelState? = null,
+        modeState: SessionModeState? = null,
     ) {
         _state.update {
             it.copy(
@@ -110,6 +114,7 @@ class AcpSessionStore {
                 error = null,
                 configOptions = configOptions,
                 modelState = modelState,
+                modeState = modeState,
             )
         }
     }
@@ -128,6 +133,20 @@ class AcpSessionStore {
         _state.update { state ->
             val current = state.modelState ?: return@update state
             state.copy(modelState = current.copy(currentModelId = modelId))
+        }
+    }
+
+    /**
+     * Igual que [onModelSelected] pero para el modo de sesión: la respuesta de
+     * `session/set_mode` no trae payload, así que el manager refleja la
+     * selección de forma optimista tras un envío exitoso. Un cambio hecho por
+     * el agente (o por otro cliente) llega además como `current_mode_update`
+     * y pasa por [onUpdate].
+     */
+    fun onModeSelected(modeId: String) {
+        _state.update { state ->
+            val current = state.modeState ?: return@update state
+            state.copy(modeState = current.copy(currentModeId = modeId))
         }
     }
 
@@ -152,8 +171,13 @@ class AcpSessionStore {
                     plan = update.plan.entries.map { PlanEntryUi(it.content, it.status) },
                 )
                 is SessionUpdate.ConfigOptionUpdate -> state.copy(configOptions = update.configOptions)
-                // Modo, comandos disponibles, uso: la v1 del chat no los
-                // renderiza; se ignoran sin romper la sesión.
+                // El agente cambió el modo por su cuenta (p. ej. salir de
+                // "plan" al aprobar el plan) o lo cambió otro cliente.
+                is SessionUpdate.CurrentModeUpdate -> state.modeState
+                    ?.let { modes -> state.copy(modeState = modes.copy(currentModeId = update.modeId)) }
+                    ?: state
+                // Comandos disponibles, uso: la v1 del chat no los renderiza;
+                // se ignoran sin romper la sesión.
                 else -> state
             }
         }
