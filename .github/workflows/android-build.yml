@@ -14,6 +14,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # versionCode in android/build.gradle.kts is `git rev-list --count
+          # HEAD` — with the default shallow clone (depth 1) that always
+          # comes out as 1, so every CI build "versioned" identically. Full
+          # history is needed for the count (and the tag below) to mean
+          # anything.
+          fetch-depth: 0
 
       - name: Set up JDK 25
         uses: actions/setup-java@v4
@@ -34,20 +41,39 @@ jobs:
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -XX:MaxDirectMemorySize=512m"
         run: ./gradlew :android:assembleDebug --no-daemon
 
+      - name: Compute build version
+        id: version
+        run: |
+          # Same versionCode the Gradle build just embedded in the APK
+          # (android/build.gradle.kts:gitCommitCount()) — kept in sync so the
+          # tag/filename always match what's actually inside the package.
+          version_code=$(git rev-list --count HEAD)
+          version_name=$(grep -oP 'versionName = "\K[^"]+' android/build.gradle.kts)
+          short_sha=$(git rev-parse --short HEAD)
+          tag="v${version_name}-${version_code}"
+          apk_name="acp-ssh-kmp-${tag}-${short_sha}.apk"
+          echo "tag=${tag}-${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "apk_name=${apk_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Rename APK
+        run: |
+          mv android/build/outputs/apk/debug/android-debug.apk \
+             "android/build/outputs/apk/debug/${{ steps.version.outputs.apk_name }}"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: acp-ssh-kmp-debug-apk
-          path: android/build/outputs/apk/debug/*.apk
+          name: ${{ steps.version.outputs.apk_name }}
+          path: android/build/outputs/apk/debug/${{ steps.version.outputs.apk_name }}
           if-no-files-found: error
 
-      - name: Publish latest release
+      - name: Publish versioned release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: Latest debug build
-          body: "Automated debug APK from ${{ github.sha }}"
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.apk_name }}
+          body: "Automated debug APK build from ${{ github.sha }}."
           prerelease: true
-          files: android/build/outputs/apk/debug/*.apk
+          files: android/build/outputs/apk/debug/${{ steps.version.outputs.apk_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
