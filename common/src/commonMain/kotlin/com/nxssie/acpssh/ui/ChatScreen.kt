@@ -101,6 +101,7 @@ fun ChatScreen(host: AcpHost) {
     val snackbarHostState = remember { SnackbarHostState() }
     var limitNotice by remember { mutableStateOf(false) }
     var showRemoteSessions by remember { mutableStateOf(false) }
+    var showLog by remember { mutableStateOf(false) }
 
     LaunchedEffect(limitNotice) {
         if (limitNotice) {
@@ -168,6 +169,7 @@ fun ChatScreen(host: AcpHost) {
                     onCloseTab = { host.closeTab(active.tabId) },
                     onKillAgent = { host.killTabAgent(active.tabId) },
                     onShowRemoteSessions = { showRemoteSessions = true },
+                    onShowLog = { showLog = true },
                     onSetConfigOption = host::setConfigOption,
                     onSetModel = host::setModel,
                     onSetMode = host::setMode,
@@ -184,6 +186,10 @@ fun ChatScreen(host: AcpHost) {
 
     if (showRemoteSessions) {
         RemoteSessionsDialog(host = host, onDismiss = { showRemoteSessions = false })
+    }
+
+    if (showLog) {
+        LogViewerDialog(onDismiss = { showLog = false })
     }
 }
 
@@ -249,6 +255,7 @@ private fun ChatContent(
     onCloseTab: () -> Unit,
     onKillAgent: () -> Unit,
     onShowRemoteSessions: () -> Unit,
+    onShowLog: () -> Unit,
     onSetConfigOption: (String, String) -> Unit,
     onSetModel: (String) -> Unit,
     onSetMode: (String) -> Unit,
@@ -282,7 +289,7 @@ private fun ChatContent(
     }
 
     Column(modifier.fillMaxWidth()) {
-        ChatHeader(state, onDisconnect, onCloseTab, onKillAgent, onShowRemoteSessions)
+        ChatHeader(state, onDisconnect, onCloseTab, onKillAgent, onShowRemoteSessions, onShowLog)
 
         val configOptions = state.configOptions.filter { it.id.isNotBlank() }
         if (configOptions.isNotEmpty() || state.modelState != null || state.modeState != null) {
@@ -464,6 +471,7 @@ private fun ChatHeader(
     onCloseTab: () -> Unit,
     onKillAgent: () -> Unit,
     onShowRemoteSessions: () -> Unit,
+    onShowLog: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Row(
@@ -519,6 +527,13 @@ private fun ChatHeader(
                     onClick = {
                         menuOpen = false
                         onShowRemoteSessions()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Ver registro") },
+                    onClick = {
+                        menuOpen = false
+                        onShowLog()
                     },
                 )
             }

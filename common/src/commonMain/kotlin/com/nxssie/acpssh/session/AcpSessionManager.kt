@@ -2,10 +2,13 @@ package com.nxssie.acpssh.session
 
 import com.nxssie.acpssh.acp.AcpClient
 import com.nxssie.acpssh.acp.AcpExecTransport
+import com.nxssie.acpssh.acp.ErrorOrigin
 import com.nxssie.acpssh.acp.PermissionOutcome
 import com.nxssie.acpssh.acp.PermissionRequest
 import com.nxssie.acpssh.acp.RemoteAcpProcess
+import com.nxssie.acpssh.acp.classifiedMessage
 import com.nxssie.acpssh.acp.readAllToString
+import com.nxssie.acpssh.log.AppLog
 import com.nxssie.acpssh.profile.SavedTabSession
 import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CancellationException
@@ -208,7 +211,9 @@ class AcpSessionManager(
                         runCatching { transport?.close() }
                         transport = null
                     }
-                    _connection.value = ConnectionState(ConnectStatus.FAILED, error = e.message ?: e.toString())
+                    val message = classifiedMessage(e)
+                    AppLog.e("connect", message, e.stackTraceToString())
+                    _connection.value = ConnectionState(ConnectStatus.FAILED, error = message)
                 }
             }
         }
@@ -358,8 +363,15 @@ class AcpSessionManager(
         } catch (e: Exception) {
             // Un tab que no arranca (agente no instalado, handshake agotado) no
             // tumba la conexión ni los demás tabs: se queda con su error.
-            store.onError(e.message ?: e.toString())
+            reportTabError(tabId, store, e)
         }
+    }
+
+    /** Clasifica, loguea (con el stack trace completo, solo en [AppLog]) y refleja un error en el tab. */
+    private fun reportTabError(tabId: String, store: AcpSessionStore, e: Throwable) {
+        val message = classifiedMessage(e)
+        AppLog.e("tab-$tabId", message, e.stackTraceToString())
+        store.onError(message)
     }
 
     /** Guarda (o actualiza) el sessionId+cwd real de un tab para poder retomarlo tras un reinicio del proceso. */
@@ -401,10 +413,15 @@ class AcpSessionManager(
     private suspend fun handleTabEof(tabId: String) {
         val entry = mutex.withLock { entries[tabId] } ?: return
         if (entry.closing) return
+        // Un EOF de canal es, casi siempre, la SSH cayéndose o el servidor
+        // cerrando la conexión — no un fallo del cliente: se etiqueta igual
+        // que el resto de errores de conexión en vez de un "Conexión perdida"
+        // desnudo, y queda en el log para poder revisarlo después.
+        AppLog.w("tab-$tabId", "${ErrorOrigin.CONNECTION.label}: EOF inesperado en el canal remoto")
         if (_connection.value.status == ConnectStatus.CONNECTED ||
             _connection.value.status == ConnectStatus.CONNECTING
         ) {
-            _connection.value = ConnectionState(ConnectStatus.DISCONNECTED, error = "Conexión perdida")
+            _connection.value = ConnectionState(ConnectStatus.DISCONNECTED, error = "${ErrorOrigin.CONNECTION.label}: se perdió la conexión")
         }
         disconnectInternal()
     }
@@ -435,7 +452,15 @@ class AcpSessionManager(
             if (state.busy || text.isBlank()) return@launch
             entry.store.onUserPrompt(text)
             val result = client.prompt(sessionId, text)
-            entry.store.onTurnEnd(error = result.error?.message)
+            val error = result.error?.let { err ->
+                // Error JSON-RPC devuelto por el propio agente (no una excepción
+                // local): siempre PROTOCOLO, con su código, para no dejar
+                // adivinar si el fallo fue del cliente o del agente remoto.
+                val message = "${ErrorOrigin.PROTOCOL.label} (código ${err.code}): ${err.message}"
+                AppLog.e("tab-${_activeTabId.value}", message, err.data?.toString())
+                message
+            }
+            entry.store.onTurnEnd(error = error)
         }
     }
 
@@ -483,7 +508,7 @@ class AcpSessionManager(
             val sessionId = entry.store.state.value.sessionId ?: return@launch
             runCatching { client.setConfigOption(sessionId, configId, value) }
                 .onSuccess { entry.store.onConfigOptions(it) }
-                .onFailure { entry.store.onError(it.message ?: it.toString()) }
+                .onFailure { reportTabError(_activeTabId.value ?: "?", entry.store, it) }
         }
     }
 
@@ -498,7 +523,7 @@ class AcpSessionManager(
             val sessionId = entry.store.state.value.sessionId ?: return@launch
             runCatching { client.setModel(sessionId, modelId) }
                 .onSuccess { entry.store.onModelSelected(modelId) }
-                .onFailure { entry.store.onError(it.message ?: it.toString()) }
+                .onFailure { reportTabError(_activeTabId.value ?: "?", entry.store, it) }
         }
     }
 
@@ -515,7 +540,7 @@ class AcpSessionManager(
             val sessionId = entry.store.state.value.sessionId ?: return@launch
             runCatching { client.setMode(sessionId, modeId) }
                 .onSuccess { entry.store.onModeSelected(modeId) }
-                .onFailure { entry.store.onError(it.message ?: it.toString()) }
+                .onFailure { reportTabError(_activeTabId.value ?: "?", entry.store, it) }
         }
     }
 

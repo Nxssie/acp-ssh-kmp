@@ -44,6 +44,7 @@ fun ProfilesScreen(
     onEdit: (ConnectionProfile) -> Unit,
 ) {
     var profiles by remember { mutableStateOf(store.listProfiles()) }
+    var showLog by remember { mutableStateOf(false) }
     val keyIds = remember(profiles) { store.listKeys().map { it.id }.toSet() }
     val lastProfileId = remember(profiles) { store.loadLastProfileId() }
 
@@ -92,7 +93,15 @@ fun ProfilesScreen(
 
         if (error != null) {
             Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            // El mensaje ya trae el origen (conexión/servidor/agente/app, ver
+            // ErrorOrigin) pero es de una línea; el detalle completo (stack
+            // trace, causa exacta) solo cabe en el registro.
+            TextButton(onClick = { showLog = true }) { Text("Ver registro") }
         }
+    }
+
+    if (showLog) {
+        LogViewerDialog(onDismiss = { showLog = false })
     }
 }
 

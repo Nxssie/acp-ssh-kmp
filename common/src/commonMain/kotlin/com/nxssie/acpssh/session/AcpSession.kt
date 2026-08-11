@@ -3,6 +3,7 @@ package com.nxssie.acpssh.session
 import com.nxssie.acpssh.acp.AcpClient
 import com.nxssie.acpssh.acp.AcpException
 import com.nxssie.acpssh.acp.AcpExecTransport
+import com.nxssie.acpssh.acp.AgentUnresponsiveException
 import com.nxssie.acpssh.acp.DuplexRawByteChannel
 import com.nxssie.acpssh.acp.NdjsonFramer
 import com.nxssie.acpssh.acp.RawByteChannel
@@ -91,10 +92,12 @@ class AcpSession(
             AcpSessionResult(client, initialize, newSession)
         }
     } catch (e: TimeoutCancellationException) {
-        throw IllegalStateException(
+        // Tipo propio (no IllegalStateException) para que classify() lo
+        // atribuya al SERVIDOR sin depender de parsear este texto: el agente
+        // remoto no respondiendo a tiempo no es un bug del cliente.
+        throw AgentUnresponsiveException(
             "El agente ACP remoto ('$agentCommand') no respondió en ${HANDSHAKE_TIMEOUT_MS / 1000}s. " +
                 "Revisa que esté instalado y corriendo (log: $runDir/${RemoteAcpProcess.STDERR_LOG} en el servidor).",
-            e,
         )
     }
 

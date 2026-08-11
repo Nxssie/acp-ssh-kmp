@@ -1,6 +1,8 @@
 package com.nxssie.acpssh
 
 import android.content.Context
+import com.nxssie.acpssh.acp.classifiedMessage
+import com.nxssie.acpssh.log.AppLog
 import com.nxssie.acpssh.session.ConnectionState
 import com.nxssie.acpssh.session.ConnectStatus
 import com.nxssie.acpssh.session.TerminalConfig
@@ -98,7 +100,9 @@ class AndroidSshTerminalHost(context: Context) : TerminalHost {
                 shell = null
                 writeChannel?.close()
                 writeChannel = null
-                _connection.value = ConnectionState(ConnectStatus.FAILED, error = e.message ?: e.toString())
+                val message = classifiedMessage(e)
+                AppLog.e("terminal", message, e.stackTraceToString())
+                _connection.value = ConnectionState(ConnectStatus.FAILED, error = message)
             }
         }
     }
