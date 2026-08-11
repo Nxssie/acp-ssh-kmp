@@ -337,6 +337,7 @@ class AcpSessionManager(
                 agentName = result.initialize.agentTitle ?: result.initialize.agentName,
                 sessionId = result.newSession.sessionId,
                 configOptions = result.newSession.configOptions ?: emptyList(),
+                modelState = result.newSession.models,
             )
             val cwd = session.resolvedCwd
             if (cwd != null) {
@@ -481,6 +482,21 @@ class AcpSessionManager(
             val sessionId = entry.store.state.value.sessionId ?: return@launch
             runCatching { client.setConfigOption(sessionId, configId, value) }
                 .onSuccess { entry.store.onConfigOptions(it) }
+                .onFailure { entry.store.onError(it.message ?: it.toString()) }
+        }
+    }
+
+    /**
+     * Cambia el modelo activo del tab activo (mecanismo UNSTABLE de
+     * `claude-code-acp`, ver [com.nxssie.acpssh.acp.SetSessionModelParams]).
+     */
+    fun setModel(modelId: String) {
+        scope.launch {
+            val entry = mutex.withLock { entries[_activeTabId.value] } ?: return@launch
+            val client = entry.client ?: return@launch
+            val sessionId = entry.store.state.value.sessionId ?: return@launch
+            runCatching { client.setModel(sessionId, modelId) }
+                .onSuccess { entry.store.onModelSelected(modelId) }
                 .onFailure { entry.store.onError(it.message ?: it.toString()) }
         }
     }

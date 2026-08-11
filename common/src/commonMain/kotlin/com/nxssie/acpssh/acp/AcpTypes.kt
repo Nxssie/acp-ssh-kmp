@@ -75,6 +75,20 @@ data class SessionIdParams(val sessionId: String)
 @Serializable
 data class SetConfigOptionParams(val sessionId: String, val configId: String, val value: String)
 
+/**
+ * `session/set_model` — mecanismo **UNSTABLE** propio de `claude-code-acp`
+ * (`@agentclientprotocol/sdk` 0.14.1, la versión que fija como dependencia:
+ * verificado contra el schema real del SDK, `x-method: "session/set_model"`,
+ * marcado "not part of the spec yet, may be removed or changed at any point").
+ * Distinto de `session/set_config_option`: ese es el mecanismo genérico y
+ * estable del spec (el que usa `pi-acp` para modelo/thinking), este es
+ * específico de modelo y previo a la estabilización de la categoría `model`
+ * dentro de `configOptions`. Sin respuesta útil que parsear (solo `_meta`):
+ * el cliente actualiza su propio estado de forma optimista al enviarlo.
+ */
+@Serializable
+data class SetSessionModelParams(val sessionId: String, val modelId: String)
+
 /** Respuesta del cliente a `session/request_permission` (outcome del spec). */
 sealed interface PermissionOutcome {
     data class Selected(val optionId: String) : PermissionOutcome
@@ -107,7 +121,42 @@ data class NewSessionResult(
     val sessionId: String,
     val modes: JsonObject?,
     val configOptions: List<ConfigOption>?,
+    val models: SessionModelState?,
 )
+
+/** Un modelo disponible dentro de [SessionModelState]. */
+data class ModelInfo(val modelId: String, val name: String, val description: String?) {
+    companion object {
+        fun from(obj: JsonObject?): ModelInfo {
+            val raw = obj ?: JsonObject(emptyMap())
+            return ModelInfo(
+                modelId = raw["modelId"]?.jsonPrimitive?.contentOrNull ?: "",
+                name = raw["name"]?.jsonPrimitive?.contentOrNull ?: "",
+                description = raw["description"]?.jsonPrimitive?.contentOrNull,
+            )
+        }
+    }
+}
+
+/**
+ * `NewSessionResult.models` (mecanismo UNSTABLE de `claude-code-acp`, ver
+ * [SetSessionModelParams]): el modelo activo y la lista de modelos
+ * disponibles. Sin notificación equivalente a `config_option_update` en el
+ * schema — el cliente no tiene forma de saber si otro cliente lo cambió.
+ */
+data class SessionModelState(val availableModels: List<ModelInfo>, val currentModelId: String) {
+    companion object {
+        fun from(obj: JsonObject?): SessionModelState? {
+            val raw = obj ?: return null
+            val currentModelId = raw["currentModelId"]?.jsonPrimitive?.contentOrNull ?: return null
+            return SessionModelState(
+                availableModels = raw["availableModels"]?.jsonArray?.mapNotNull { it.jsonObjectOrNull()?.let(ModelInfo::from) }
+                    ?: emptyList(),
+                currentModelId = currentModelId,
+            )
+        }
+    }
+}
 
 /**
  * Un valor seleccionable de un [ConfigOption] de tipo `select` (p. ej. un

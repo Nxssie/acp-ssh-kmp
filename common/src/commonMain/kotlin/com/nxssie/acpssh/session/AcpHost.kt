@@ -72,4 +72,7 @@ interface AcpHost : HasConnection {
 
     /** Cambia un config option (p. ej. modelo/thinking) del tab activo. */
     fun setConfigOption(configId: String, value: String)
+
+    /** Cambia el modelo activo del tab activo (mecanismo UNSTABLE de `claude-code-acp`). */
+    fun setModel(modelId: String)
 }

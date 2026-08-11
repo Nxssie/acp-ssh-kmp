@@ -7,6 +7,7 @@ import com.nxssie.acpssh.acp.AcpToolCallUpdate
 import com.nxssie.acpssh.acp.ConfigOption
 import com.nxssie.acpssh.acp.ContentBlock
 import com.nxssie.acpssh.acp.PermissionRequest
+import com.nxssie.acpssh.acp.SessionModelState
 import com.nxssie.acpssh.acp.SessionUpdate
 import com.nxssie.acpssh.acp.ToolCallContent
 import com.nxssie.acpssh.acp.ToolCallStatus
@@ -77,6 +78,8 @@ data class AcpSessionState(
     val plan: List<PlanEntryUi> = emptyList(),
     /** Config options de la sesión (p. ej. modelo/thinking en `pi-acp`), ver [ConfigOption]. */
     val configOptions: List<ConfigOption> = emptyList(),
+    /** Modelo activo/disponibles vía el mecanismo UNSTABLE de `claude-code-acp`, ver [SessionModelState]. */
+    val modelState: SessionModelState? = null,
     val pendingPermission: PermissionUi? = null,
     /** Un turno (prompt) en vuelo: el input se bloquea y se muestra cancelar. */
     val busy: Boolean = false,
@@ -94,13 +97,38 @@ class AcpSessionStore {
     private val _state = MutableStateFlow(AcpSessionState())
     val state: StateFlow<AcpSessionState> = _state
 
-    fun onSessionStarted(agentName: String?, sessionId: String, configOptions: List<ConfigOption> = emptyList()) {
-        _state.update { it.copy(agentName = agentName, sessionId = sessionId, error = null, configOptions = configOptions) }
+    fun onSessionStarted(
+        agentName: String?,
+        sessionId: String,
+        configOptions: List<ConfigOption> = emptyList(),
+        modelState: SessionModelState? = null,
+    ) {
+        _state.update {
+            it.copy(
+                agentName = agentName,
+                sessionId = sessionId,
+                error = null,
+                configOptions = configOptions,
+                modelState = modelState,
+            )
+        }
     }
 
     /** Config options actualizadas (respuesta de `session/set_config_option`, o `config_option_update`). */
     fun onConfigOptions(options: List<ConfigOption>) {
         _state.update { it.copy(configOptions = options) }
+    }
+
+    /**
+     * `session/set_model` no confirma nada útil (ver [AcpClient.setModel]):
+     * el manager llama a esto tras un envío exitoso para reflejar la
+     * selección de inmediato, sin esperar una notificación que no existe.
+     */
+    fun onModelSelected(modelId: String) {
+        _state.update { state ->
+            val current = state.modelState ?: return@update state
+            state.copy(modelState = current.copy(currentModelId = modelId))
+        }
     }
 
     fun onUpdate(update: SessionUpdate) {

@@ -98,6 +98,7 @@ class AcpClient(
             sessionId = obj?.str("sessionId") ?: "",
             modes = obj?.get("modes") as? JsonObject,
             configOptions = (obj?.get("configOptions") as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(ConfigOption::from) },
+            models = SessionModelState.from(obj?.get("models") as? JsonObject),
         )
     }
 
@@ -113,6 +114,7 @@ class AcpClient(
                 sessionId = sessionId,
                 modes = obj?.get("modes") as? JsonObject,
                 configOptions = (obj?.get("configOptions") as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(ConfigOption::from) },
+                models = SessionModelState.from(obj?.get("models") as? JsonObject),
             )
         }
 
@@ -164,6 +166,16 @@ class AcpClient(
             (result?.jsonObjectOrNull()?.get("configOptions") as? JsonArray)
                 ?.mapNotNull { (it as? JsonObject)?.let(ConfigOption::from) } ?: emptyList()
         }
+
+    /**
+     * Cambia el modelo activo (mecanismo UNSTABLE de `claude-code-acp`, ver
+     * [SetSessionModelParams]) — la respuesta no trae nada útil que parsear
+     * (solo `_meta`), así que el llamador actualiza su estado de forma
+     * optimista si esto no lanza.
+     */
+    suspend fun setModel(sessionId: String, modelId: String) {
+        request("session/set_model", encodeToJson(SetSessionModelParams(sessionId, modelId))) {}
+    }
 
     /** Responde a un [request] de permiso pendiente con la decisión del usuario. */
     suspend fun respondPermission(request: PermissionRequest, outcome: PermissionOutcome) {
