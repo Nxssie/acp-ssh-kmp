@@ -57,4 +57,16 @@ interface AcpHost : HasConnection {
     fun cancelTurn()
 
     fun disconnect()
+
+    /** Último barrido de [refreshRemoteSessions] sobre el runDir base del perfil activo. */
+    val remoteSessions: StateFlow<RemoteSessionsUi>
+
+    /** Repuebla [remoteSessions]: hace visibles también los runDirs que este dispositivo no recuerda. */
+    fun refreshRemoteSessions()
+
+    /** Adjunta un tab nuevo a un runDir vivo del host que este dispositivo no recuerda. */
+    fun attachRemoteSession(dirName: String)
+
+    /** Termina un runDir del host, esté o no abierto como tab aquí. */
+    fun killRemoteSession(dirName: String)
 }

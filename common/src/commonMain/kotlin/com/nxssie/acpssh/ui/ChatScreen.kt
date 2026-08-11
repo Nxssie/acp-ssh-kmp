@@ -97,6 +97,7 @@ fun ChatScreen(host: AcpHost) {
     val active = tabs.firstOrNull { it.tabId == activeTabId }
     val snackbarHostState = remember { SnackbarHostState() }
     var limitNotice by remember { mutableStateOf(false) }
+    var showRemoteSessions by remember { mutableStateOf(false) }
 
     LaunchedEffect(limitNotice) {
         if (limitNotice) {
@@ -130,6 +131,7 @@ fun ChatScreen(host: AcpHost) {
                     onDisconnect = host::disconnect,
                     onCloseTab = { host.closeTab(active.tabId) },
                     onKillAgent = { host.killTabAgent(active.tabId) },
+                    onShowRemoteSessions = { showRemoteSessions = true },
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -139,6 +141,10 @@ fun ChatScreen(host: AcpHost) {
 
     active?.session?.pendingPermission?.let { pending ->
         PermissionDialog(pending, onRespond = host::respondPermission)
+    }
+
+    if (showRemoteSessions) {
+        RemoteSessionsDialog(host = host, onDismiss = { showRemoteSessions = false })
     }
 }
 
@@ -203,6 +209,7 @@ private fun ChatContent(
     onDisconnect: () -> Unit,
     onCloseTab: () -> Unit,
     onKillAgent: () -> Unit,
+    onShowRemoteSessions: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -233,7 +240,7 @@ private fun ChatContent(
     }
 
     Column(modifier.fillMaxWidth()) {
-        ChatHeader(state, onDisconnect, onCloseTab, onKillAgent)
+        ChatHeader(state, onDisconnect, onCloseTab, onKillAgent, onShowRemoteSessions)
 
         if (state.error != null && state.sessionId == null) {
             // El tab no consiguió arrancar (agente no instalado, handshake agotado).
@@ -306,6 +313,7 @@ private fun ChatHeader(
     onDisconnect: () -> Unit,
     onCloseTab: () -> Unit,
     onKillAgent: () -> Unit,
+    onShowRemoteSessions: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Row(
@@ -354,6 +362,13 @@ private fun ChatHeader(
                     onClick = {
                         menuOpen = false
                         onKillAgent()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Sesiones del servidor…") },
+                    onClick = {
+                        menuOpen = false
+                        onShowRemoteSessions()
                     },
                 )
             }

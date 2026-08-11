@@ -11,6 +11,7 @@ import com.nxssie.acpssh.session.AcpHost
 import com.nxssie.acpssh.session.AcpSessionManager
 import com.nxssie.acpssh.session.AcpTabState
 import com.nxssie.acpssh.session.ConnectionState
+import com.nxssie.acpssh.session.RemoteSessionsUi
 import com.nxssie.acpssh.session.TerminalConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -65,6 +66,11 @@ class AndroidAcpHost(context: Context, profileStore: ProfileStore) : AcpHost {
     override fun toggleToolCall(id: String) = manager.toggleToolCall(id)
     override fun cancelTurn() = manager.cancelTurn()
     override fun disconnect() = manager.disconnect()
+
+    override val remoteSessions: StateFlow<RemoteSessionsUi> = manager.remoteSessions
+    override fun refreshRemoteSessions() = manager.refreshRemoteSessions()
+    override fun attachRemoteSession(dirName: String) = manager.attachRemoteSession(dirName)
+    override fun killRemoteSession(dirName: String) = manager.killRemoteSession(dirName)
 
     private class AndroidAcpTransport(private val ssh: SSHClient) : AcpExecTransport {
         override suspend fun exec(command: String): RawByteChannel = withContext(Dispatchers.IO) {

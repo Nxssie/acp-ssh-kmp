@@ -12,6 +12,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -19,9 +20,34 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 
 /** Snapshot de un tab de chat para la UI: id estable + estado de su sesión ACP. */
 data class AcpTabState(val tabId: String, val session: AcpSessionState)
+
+/**
+ * Fila de "Sesiones del servidor…": lo que hay vivo en un runDir del host,
+ * venga o no de un tab que este dispositivo recuerda. [openHere] distingue
+ * ambos casos para la UI (deshabilitar "Retomar", ofrecer "Terminar" también
+ * para huérfanos de otro dispositivo o de un "Cerrar tab" que los dejó vivos).
+ */
+data class RemoteAgentSession(
+    val dirName: String,
+    val alive: Boolean,
+    val pid: String?,
+    val idleSeconds: Long?,
+    val attached: Boolean?,
+    val sessionId: String?,
+    val cwd: String?,
+    val openHere: Boolean,
+)
+
+/** Estado de la pantalla de sesiones remotas: carga/lista/error, como [ConnectionState]. */
+data class RemoteSessionsUi(
+    val loading: Boolean = false,
+    val sessions: List<RemoteAgentSession> = emptyList(),
+    val error: String? = null,
+)
 
 /**
  * Gestor multi-sesión ACP (Fase H): UNA conexión SSH compartida y un proceso
@@ -76,6 +102,12 @@ class AcpSessionManager(
 
     private val _tabs = MutableStateFlow<List<AcpTabState>>(emptyList())
     val tabs: StateFlow<List<AcpTabState>> = _tabs
+
+    private val _remoteSessions = MutableStateFlow(RemoteSessionsUi())
+
+    /** Último barrido de [refreshRemoteSessions] sobre el runDir base del perfil activo. */
+    val remoteSessions: StateFlow<RemoteSessionsUi> = _remoteSessions
+    private var remoteSessionsJob: Job? = null
 
     private val _activeTabId = MutableStateFlow<String?>(null)
     val activeTabId: StateFlow<String?> = _activeTabId
@@ -192,6 +224,9 @@ class AcpSessionManager(
 
     /** Cierra tabs y transporte pero conserva [tabIds] para reanudarlos al reconectar. */
     private suspend fun disconnectInternal() {
+        remoteSessionsJob?.cancel()
+        remoteSessionsJob = null
+        _remoteSessions.value = RemoteSessionsUi()
         val (t, es) = mutex.withLock {
             val t = transport
             transport = null
@@ -224,19 +259,21 @@ class AcpSessionManager(
 
     /** Cierra el tab Y termina el agente remoto (acción explícita del usuario). */
     fun killTabAgent(tabId: String) {
-        scope.launch {
-            val runDir = mutex.withLock { entries[tabId]?.runDir }
-            // closeTabInternal ya sacaba el tab de sessionRecords/tabIds y persiste.
-            closeTabInternal(tabId)
-            val t = mutex.withLock { transport } ?: return@launch
-            if (runDir != null) {
-                runCatching {
-                    val channel = t.exec(RemoteAcpProcess.killCommand(runDir))
-                    try {
-                        channel.readAllToString()
-                    } finally {
-                        channel.close()
-                    }
+        scope.launch { killTabAgentInternal(tabId) }
+    }
+
+    private suspend fun killTabAgentInternal(tabId: String) {
+        val runDir = mutex.withLock { entries[tabId]?.runDir }
+        // closeTabInternal ya sacaba el tab de sessionRecords/tabIds y persiste.
+        closeTabInternal(tabId)
+        val t = mutex.withLock { transport } ?: return
+        if (runDir != null) {
+            runCatching {
+                val channel = t.exec(RemoteAcpProcess.killCommand(runDir))
+                try {
+                    channel.readAllToString()
+                } finally {
+                    channel.close()
                 }
             }
         }
@@ -248,10 +285,15 @@ class AcpSessionManager(
 
     private suspend fun newTabId(): String = mutex.withLock { "tab-${nextTabNumber++}" }
 
+    /** Base de runDir del perfil activo (`config.acpRunDir` o el default), compartida por tabs y listado remoto. */
+    private fun currentRunDirBase(): String =
+        connectedConfig?.acpRunDir?.takeIf { it.isNotBlank() } ?: AcpSession.DEFAULT_RUN_DIR
+
     private suspend fun openTabInternal(tabId: String) {
+        val myEpoch = epoch
         val config = connectedConfig ?: return
         val t = mutex.withLock { transport } ?: return
-        val base = config.acpRunDir?.takeIf { it.isNotBlank() } ?: AcpSession.DEFAULT_RUN_DIR
+        val base = currentRunDirBase()
         val runDir = "$base/$tabId"
         val store = AcpSessionStore()
         val entry = TabEntry(tabId, runDir, store)
@@ -267,6 +309,15 @@ class AcpSessionManager(
         try {
             val session = AcpSession(t, config.copy(acpRunDir = runDir), scope)
             val result = session.start(resume)
+            if (myEpoch != epoch) {
+                // Se desconectó (o se reconectó) mientras el agente arrancaba: no
+                // publicar sobre un estado que ya no es el actual — mismo riesgo de
+                // `connect()` que documenta [epoch], aquí por tab individual
+                // (relevante ahora que `openTabInternal` también lo dispara
+                // [attachRemoteSession], que puede tardar el handshake completo).
+                runCatching { session.close() }
+                return
+            }
             entry.acpSession = session
             entry.client = result.client
             result.client.onEof = { scope.launch { handleTabEof(tabId) } }
@@ -287,7 +338,18 @@ class AcpSessionManager(
                 sessionId = result.newSession.sessionId,
             )
             val cwd = session.resolvedCwd
-            if (cwd != null) persistTabSession(config.profileId, tabId, result.newSession.sessionId, cwd)
+            if (cwd != null) {
+                // Marcador en el host (independiente del registro local del
+                // dispositivo): hace posible retomar esta sesión desde "Sesiones
+                // del servidor…" en otro dispositivo o tras perder el registro
+                // local. Falla en silencio: degrada el descubrimiento remoto, no
+                // debe tumbar un tab que sí arrancó bien.
+                runCatching {
+                    val channel = t.exec(RemoteAcpProcess.writeSessionCommand(runDir, result.newSession.sessionId, cwd))
+                    try { channel.readAllToString() } finally { channel.close() }
+                }
+                persistTabSession(config.profileId, tabId, result.newSession.sessionId, cwd)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -405,7 +467,145 @@ class AcpSessionManager(
         }
     }
 
+    // --- sesiones remotas --------------------------------------------------------
+
+    /**
+     * Barre el runDir base del perfil activo y repuebla [remoteSessions]: hace
+     * visibles también los runDirs que este dispositivo no recuerda (otro
+     * dispositivo, un "Cerrar tab" que los dejó vivos, o una reinstalación) —
+     * lo que hoy solo se podía matar a ciegas con un cron en el host.
+     */
+    fun refreshRemoteSessions() {
+        remoteSessionsJob?.cancel()
+        remoteSessionsJob = scope.launch {
+            _remoteSessions.update { it.copy(loading = true, error = null) }
+            val t = mutex.withLock { transport }
+            if (t == null) {
+                _remoteSessions.update { it.copy(loading = false, error = "No hay conexión activa.") }
+                return@launch
+            }
+            val base = currentRunDirBase()
+            val openDirs = mutex.withLock { entries.keys.toSet() }
+            try {
+                val raw = withTimeout(REMOTE_SESSIONS_TIMEOUT_MS) {
+                    val channel = t.exec(RemoteAcpProcess.listCommand(base))
+                    try { channel.readAllToString() } finally { channel.close() }
+                }
+                val parsed = RemoteAcpProcess.parseListOutput(raw)
+                if (parsed == null) {
+                    _remoteSessions.update { it.copy(loading = false, error = "Respuesta incompleta del servidor.") }
+                } else {
+                    _remoteSessions.value = RemoteSessionsUi(
+                        sessions = parsed.map { e ->
+                            RemoteAgentSession(
+                                dirName = e.dirName,
+                                alive = e.alive,
+                                pid = e.pid,
+                                idleSeconds = e.idleSeconds,
+                                attached = e.attached,
+                                sessionId = e.sessionId,
+                                cwd = e.cwd,
+                                openHere = e.dirName in openDirs,
+                            )
+                        },
+                    )
+                }
+            } catch (e: TimeoutCancellationException) {
+                _remoteSessions.update { it.copy(loading = false, error = "El servidor no respondió a tiempo.") }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _remoteSessions.update { it.copy(loading = false, error = e.message ?: e.toString()) }
+            }
+        }
+    }
+
+    /**
+     * Adjunta un tab a un runDir vivo en el host que este dispositivo no
+     * recuerda. Reutiliza tal cual el arranque idempotente + `session/load` de
+     * [openTabInternal]: basta con sembrar [resumeInfo]/[tabIds] con lo que trae
+     * el marcador remoto (si lo hay) antes de abrir. Sin marcador (runDir de
+     * antes de esta función, o de un agente que nunca llegó a escribirlo) abre
+     * una sesión nueva en el mismo runDir en vez de fallar.
+     */
+    fun attachRemoteSession(dirName: String) {
+        if (_connection.value.status != ConnectStatus.CONNECTED) return
+        val known = _remoteSessions.value.sessions.firstOrNull { it.dirName == dirName }
+        scope.launch {
+            val proceed = mutex.withLock {
+                when {
+                    dirName in entries -> null
+                    entries.size >= maxTabs -> false
+                    else -> {
+                        if (known?.sessionId != null && known.cwd != null) {
+                            resumeInfo[dirName] = known.sessionId to known.cwd
+                        }
+                        if (dirName !in tabIds) tabIds.add(dirName)
+                        dirName.removePrefix("tab-").toIntOrNull()?.let { n ->
+                            nextTabNumber = maxOf(nextTabNumber, n + 1)
+                        }
+                        true
+                    }
+                }
+            }
+            when (proceed) {
+                // Ya abierto aquí: el reader/writer del runDir ya son los de ESTE
+                // tab, así que reabrir crearía un segundo relevo que mata al
+                // primero (ver readerCommand/writerCommand) y desconecta todo.
+                null -> selectTab(dirName)
+                false -> _remoteSessions.update {
+                    it.copy(error = "Máximo $maxTabs tabs simultáneos: cierra uno primero.")
+                }
+                true -> {
+                    openTabInternal(dirName)
+                    val stillOpen = mutex.withLock { dirName in entries }
+                    if (!stillOpen) {
+                        // openTabInternal abortó (falló el arranque, o cambió el
+                        // epoch mientras corría): no dejar un tabId fantasma que
+                        // el próximo connect() intente reabrir contra la nada.
+                        mutex.withLock { tabIds.remove(dirName); resumeInfo.remove(dirName) }
+                    }
+                    refreshRemoteSessions()
+                }
+            }
+        }
+    }
+
+    /**
+     * Termina un runDir del host, esté o no abierto como tab en este
+     * dispositivo. Si está abierto reutiliza [killTabAgentInternal] (cierra el
+     * tab local a la vez); si es un huérfano mata el proceso remoto directamente
+     * y limpia cualquier registro local residual, para que un reconnect no
+     * intente resucitarlo contra un runDir ya borrado.
+     */
+    fun killRemoteSession(dirName: String) {
+        scope.launch {
+            val openLocally = mutex.withLock { dirName in entries }
+            if (openLocally) {
+                killTabAgentInternal(dirName)
+            } else {
+                val t = mutex.withLock { transport }
+                if (t != null) {
+                    runCatching {
+                        val channel = t.exec(RemoteAcpProcess.killCommand("${currentRunDirBase()}/$dirName"))
+                        try { channel.readAllToString() } finally { channel.close() }
+                    }
+                }
+                val profileId = connectedConfig?.profileId
+                val snapshot = mutex.withLock {
+                    tabIds.remove(dirName)
+                    resumeInfo.remove(dirName)
+                    sessionRecords.remove(dirName)
+                    sessionRecords.values.toList()
+                }
+                if (profileId != null) saveTabs(profileId, snapshot)
+            }
+            refreshRemoteSessions()
+        }
+    }
+
     companion object {
         const val DEFAULT_MAX_TABS = 5
+        const val REMOTE_SESSIONS_TIMEOUT_MS = 15_000L
     }
 }
