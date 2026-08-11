@@ -325,6 +325,79 @@ class AcpClientTest {
     }
 
     /**
+     * `models` real de `claude-code-acp` (mecanismo UNSTABLE, distinto de
+     * `configOptions` — verificado contra el schema de `@agentclientprotocol/sdk`
+     * 0.14.1, la versión que ese agente fija como dependencia: `x-method`
+     * `"session/set_model"`, marcado "not part of the spec yet").
+     */
+    @Test
+    fun newSessionParsesTypedModelState() = runBlocking {
+        val channel = QueueChannel()
+        val (client, scope) = client(channel)
+        try {
+            val sessionDeferred = async { withTimeout(5_000) { client.newSession("/tmp") } }
+            while (!channel.written.contains("\"method\":\"session/new\"")) kotlinx.coroutines.delay(5)
+            channel.send(
+                """{"jsonrpc":"2.0","id":1,"result":{"sessionId":"sess-1","modes":null,""" +
+                    """"models":{"currentModelId":"claude-sonnet-5","availableModels":[""" +
+                    """{"modelId":"claude-sonnet-5","name":"Claude Sonnet 5"},""" +
+                    """{"modelId":"claude-opus-5","name":"Claude Opus 5","description":"Most capable"}""" +
+                    """]}}}""",
+            )
+            val result = sessionDeferred.await()
+            val models = result.models!!
+            assertEquals("claude-sonnet-5", models.currentModelId)
+            assertEquals(2, models.availableModels.size)
+            assertEquals("Most capable", models.availableModels[1].description)
+        } finally {
+            client.close()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun newSessionWithoutModelsFieldLeavesModelsNull() = runBlocking {
+        val channel = QueueChannel()
+        val (client, scope) = client(channel)
+        try {
+            // `newSessionResponse` trae "id":2 (asume un initialize() previo, que
+            // consume el id 1) — sin este handshake, session/new pediría el id 1
+            // y la respuesta nunca casaría, colgando el test.
+            val initDeferred = async { withTimeout(5_000) { client.initialize() } }
+            while (!channel.written.contains("\"method\":\"initialize\"")) kotlinx.coroutines.delay(5)
+            channel.send(initializeResponse)
+            initDeferred.await()
+
+            val sessionDeferred = async { withTimeout(5_000) { client.newSession("/tmp") } }
+            while (!channel.written.contains("\"method\":\"session/new\"")) kotlinx.coroutines.delay(5)
+            channel.send(newSessionResponse)
+            assertNull(sessionDeferred.await().models)
+        } finally {
+            client.close()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun setModelSendsSessionIdAndModelId() = runBlocking {
+        val channel = QueueChannel()
+        val (client, scope) = client(channel)
+        try {
+            val resultDeferred = async { withTimeout(5_000) { client.setModel("sess-1", "claude-opus-5") } }
+            while (!channel.written.contains("\"method\":\"session/set_model\"")) kotlinx.coroutines.delay(5)
+            assertTrue(channel.written.contains("\"sessionId\":\"sess-1\""))
+            assertTrue(channel.written.contains("\"modelId\":\"claude-opus-5\""))
+
+            val id = Regex("\"id\":(\\d+),\"method\":\"session/set_model\"").find(channel.written)!!.groupValues[1]
+            channel.send("""{"jsonrpc":"2.0","id":$id,"result":{}}""")
+            resultDeferred.await()
+        } finally {
+            client.close()
+            scope.cancel()
+        }
+    }
+
+    /**
      * Reproduce el crash reportado al cerrar un tab / matar el agente: SSHJ
      * traduce la interrupción del hilo de lectura en `InterruptedIOException`
      * (no `InterruptedException`), así que `runInterruptible` no la convierte

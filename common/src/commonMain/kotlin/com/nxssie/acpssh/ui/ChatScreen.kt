@@ -72,6 +72,7 @@ import androidx.compose.ui.unit.sp
 import com.nxssie.acpssh.acp.ConfigOption
 import com.nxssie.acpssh.acp.PermissionOutcome
 import com.nxssie.acpssh.acp.PermissionRequest
+import com.nxssie.acpssh.acp.SessionModelState
 import com.nxssie.acpssh.acp.ToolCallStatus
 import com.nxssie.acpssh.diff.UnifiedDiff
 import com.nxssie.acpssh.markdown.Markdown
@@ -160,6 +161,7 @@ fun ChatScreen(host: AcpHost) {
                     onKillAgent = { host.killTabAgent(active.tabId) },
                     onShowRemoteSessions = { showRemoteSessions = true },
                     onSetConfigOption = host::setConfigOption,
+                    onSetModel = host::setModel,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -239,6 +241,7 @@ private fun ChatContent(
     onKillAgent: () -> Unit,
     onShowRemoteSessions: () -> Unit,
     onSetConfigOption: (String, String) -> Unit,
+    onSetModel: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -272,8 +275,8 @@ private fun ChatContent(
         ChatHeader(state, onDisconnect, onCloseTab, onKillAgent, onShowRemoteSessions)
 
         val configOptions = state.configOptions.filter { it.id.isNotBlank() }
-        if (configOptions.isNotEmpty()) {
-            ConfigOptionsRow(configOptions, onSetConfigOption)
+        if (configOptions.isNotEmpty() || state.modelState != null) {
+            ConfigOptionsRow(configOptions, state.modelState, onSetConfigOption, onSetModel)
         }
 
         if (state.error != null && state.sessionId == null) {
@@ -342,12 +345,18 @@ private fun ChatContent(
 }
 
 /**
- * Fila de config options de la sesión (p. ej. "Model"/"Thinking" en
- * `pi-acp`, ver [ConfigOption]): mecanismo genérico del spec ACP, así que se
- * pinta uno por cada opción que el agente anuncie, sin asumir cuáles existen.
+ * Fila de selectores de sesión: config options genéricas del spec (p. ej.
+ * "Model"/"Thinking" en `pi-acp`, ver [ConfigOption]) más el mecanismo
+ * UNSTABLE de modelo propio de `claude-code-acp` ([SessionModelState]) — dos
+ * wire contracts distintos que convergen en la misma fila de chips.
  */
 @Composable
-private fun ConfigOptionsRow(options: List<ConfigOption>, onSelect: (String, String) -> Unit) {
+private fun ConfigOptionsRow(
+    options: List<ConfigOption>,
+    modelState: SessionModelState?,
+    onSelectOption: (String, String) -> Unit,
+    onSelectModel: (String) -> Unit,
+) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -355,7 +364,32 @@ private fun ConfigOptionsRow(options: List<ConfigOption>, onSelect: (String, Str
             .padding(horizontal = 12.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        options.forEach { option -> ConfigOptionChip(option, onSelect) }
+        modelState?.let { ModelChip(it, onSelectModel) }
+        options.forEach { option -> ConfigOptionChip(option, onSelectOption) }
+    }
+}
+
+@Composable
+private fun ModelChip(state: SessionModelState, onSelect: (String) -> Unit) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val currentLabel = state.availableModels.firstOrNull { it.modelId == state.currentModelId }?.name
+        ?: state.currentModelId
+    Box {
+        AssistChip(
+            onClick = { if (state.availableModels.isNotEmpty()) menuOpen = true },
+            label = { Text("Model: $currentLabel", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        )
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            state.availableModels.forEach { model ->
+                DropdownMenuItem(
+                    text = { Text(model.name) },
+                    onClick = {
+                        menuOpen = false
+                        onSelect(model.modelId)
+                    },
+                )
+            }
+        }
     }
 }
 

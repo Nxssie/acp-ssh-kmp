@@ -263,4 +263,41 @@ class AcpSessionStoreTest {
         store.onConfigOptions(listOf(option))
         assertEquals(listOf(option), store.state.value.configOptions)
     }
+
+    @Test
+    fun onSessionStartedSeedsModelState() {
+        val store = AcpSessionStore()
+        val models = com.nxssie.acpssh.acp.SessionModelState(
+            availableModels = listOf(com.nxssie.acpssh.acp.ModelInfo("claude-sonnet-5", "Claude Sonnet 5", null)),
+            currentModelId = "claude-sonnet-5",
+        )
+        store.onSessionStarted(agentName = "claude-code-acp", sessionId = "sess-1", modelState = models)
+        assertEquals(models, store.state.value.modelState)
+    }
+
+    @Test
+    fun onModelSelectedUpdatesCurrentModelIdWithoutTouchingAvailableModels() {
+        val store = AcpSessionStore()
+        val models = com.nxssie.acpssh.acp.SessionModelState(
+            availableModels = listOf(
+                com.nxssie.acpssh.acp.ModelInfo("claude-sonnet-5", "Claude Sonnet 5", null),
+                com.nxssie.acpssh.acp.ModelInfo("claude-opus-5", "Claude Opus 5", null),
+            ),
+            currentModelId = "claude-sonnet-5",
+        )
+        store.onSessionStarted(agentName = "claude-code-acp", sessionId = "sess-1", modelState = models)
+
+        store.onModelSelected("claude-opus-5")
+
+        val updated = store.state.value.modelState!!
+        assertEquals("claude-opus-5", updated.currentModelId)
+        assertEquals(2, updated.availableModels.size)
+    }
+
+    @Test
+    fun onModelSelectedWithoutPriorModelStateIsANoOp() {
+        val store = AcpSessionStore()
+        store.onModelSelected("claude-opus-5")
+        assertNull(store.state.value.modelState)
+    }
 }
