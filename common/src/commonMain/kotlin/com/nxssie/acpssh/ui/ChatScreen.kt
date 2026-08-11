@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -771,16 +770,17 @@ private fun ChatInput(
                 Icon(Icons.Default.Stop, contentDescription = "Cancelar turno", modifier = Modifier.size(18.dp))
             }
         }
+        // Una línea (bodyMedium) + padding = 40dp, igual que el botón Enviar; crece hasta 5 líneas.
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
             modifier = Modifier
                 .weight(1f)
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .padding(horizontal = 10.dp, vertical = 8.dp)
-                .heightIn(min = 40.dp),
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh, MaterialTheme.shapes.medium)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
             textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
-            singleLine = true,
+            minLines = 1,
+            maxLines = 5,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { onSend() }),
             enabled = !busy,
