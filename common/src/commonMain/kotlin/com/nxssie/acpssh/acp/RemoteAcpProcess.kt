@@ -172,9 +172,10 @@ object RemoteAcpProcess {
     }
 
     /**
-     * Barre `baseDir/*&#47;` reportando qué runDirs hay y su estado real, para el
-     * listado "Sesiones del servidor…". Independiente de cualquier registro
-     * local: encuentra también runDirs que este dispositivo nunca abrió.
+     * Barre los subdirectorios directos de `baseDir` reportando qué runDirs hay
+     * y su estado real, para el listado "Sesiones del servidor…". Independiente
+     * de cualquier registro local: encuentra también runDirs que este
+     * dispositivo nunca abrió.
      */
     fun listCommand(baseDir: String): String = "sh -c " + shellQuote(listScript(baseDir))
 
