@@ -8,6 +8,7 @@ kotlinxIo = "0.9.1"
 sshj = "0.40.0"
 bouncycastle = "1.80.2"
 activityCompose = "1.13.0"
+androidxCore = "1.18.0"
 securityCrypto = "1.1.0-alpha06"
 coroutinesAndroid = "1.11.0"
 # Material3 tiene tren de versiones propio (desacoplado de CMP): no existe
@@ -36,5 +37,6 @@ sshj = { module = "com.hierynomus:sshj", version.ref = "sshj" }
 bouncycastle-bcprov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
 androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "securityCrypto" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutinesAndroid" }

@@ -41,6 +41,8 @@ kotlin {
             dependencies {
                 implementation(libs.bouncycastle.bcprov)
                 implementation(libs.androidx.activity.compose)
+                // FileProvider (autoupdate, ver update/UpdateChecker.kt)
+                implementation(libs.androidx.core.ktx)
             }
         }
         named("desktopMain") {

@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import com.nxssie.acpssh.update.UpdateGate
 
 class MainActivity : ComponentActivity() {
 
@@ -18,7 +19,9 @@ class MainActivity : ComponentActivity() {
         profileStore = SecureStoreProfileStore(applicationContext)
         acpHost = AndroidAcpHost(applicationContext, profileStore)
         setContent {
-            App(terminalHost, acpHost, profileStore)
+            UpdateGate {
+                App(terminalHost, acpHost, profileStore)
+            }
         }
     }
 
