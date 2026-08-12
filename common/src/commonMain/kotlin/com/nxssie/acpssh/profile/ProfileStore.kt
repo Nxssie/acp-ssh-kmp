@@ -41,6 +41,6 @@ interface ProfileStore {
     fun loadSavedTabs(profileId: String): List<SavedTabSession>
     fun saveTabs(profileId: String, tabs: List<SavedTabSession>)
 
-    fun resolve(profile: ConnectionProfile): TerminalConfig? =
-        resolveProfile(profile, listKeys(), listCommands())
+    fun resolve(profile: ConnectionProfile, mode: AcpMode): TerminalConfig? =
+        resolveProfile(profile, listKeys(), listCommands(), mode)
 }

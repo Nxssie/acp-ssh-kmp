@@ -14,6 +14,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
@@ -29,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.nxssie.acpssh.profile.ChatAgentKind
 import com.nxssie.acpssh.profile.ConnectionProfile
 import com.nxssie.acpssh.profile.ProfileStore
 import com.nxssie.acpssh.profile.SavedCommand
@@ -37,9 +39,13 @@ import com.nxssie.acpssh.session.AcpMode
 
 /**
  * Formulario de conexión (Fase G): crea o edita un [ConnectionProfile]. La
- * clave y el comando se eligen de listas gestionadas (nunca se pinta el PEM);
- * el comando tiene un default explícito por modo ("shell (default)" /
- * "claude-code-acp (default)", decisión cerrada #5) en vez de ir precargado.
+ * clave se elige de una lista gestionada (nunca se pinta el PEM). En Chat,
+ * Claude Agent y Pi Agent están siempre disponibles como primera opción (sin
+ * pasar por "Gestionar comandos"); el comando custom sigue existiendo como
+ * vía avanzada y, si se elige uno, manda sobre el agente seleccionado. El
+ * comando tiene un default explícito por modo ("shell (default)" en Terminal,
+ * "Claude Agent (default)"/"Pi Agent (default)" en Chat, decisión cerrada #5)
+ * en vez de ir precargado.
  *
  * Al conectar se guarda el perfil (upsert por id) y se marca como último usado.
  */
@@ -74,6 +80,7 @@ private fun ConnectionForm(
     var username by rememberSaveable { mutableStateOf(editing?.username ?: "") }
     var selectedKeyId by rememberSaveable { mutableStateOf(editing?.keyId) }
     var selectedCommandId by rememberSaveable { mutableStateOf(editing?.commandId) }
+    var selectedChatAgentKind by rememberSaveable { mutableStateOf(editing?.chatAgentKind) }
     var showAllCommands by rememberSaveable { mutableStateOf(false) }
 
     var keys by remember { mutableStateOf(store.listKeys()) }
@@ -85,7 +92,8 @@ private fun ConnectionForm(
     val effectiveKeyId = selectedKeyId?.takeIf { id -> keys.any { it.id == id } }
         ?: keys.firstOrNull()?.id
 
-    val defaultCommandLabel = if (mode == AcpMode.TERMINAL) "shell (default)" else "claude-code-acp (default)"
+    val effectiveChatAgentKind = selectedChatAgentKind ?: ChatAgentKind.CLAUDE
+    val defaultCommandLabel = if (mode == AcpMode.TERMINAL) "shell (default)" else "${effectiveChatAgentKind.label} (default)"
     val visibleCommands = commands.filter { showAllCommands || it.mode == null || it.mode == mode }
     val effectiveCommand = selectedCommandId?.let { id -> commands.firstOrNull { it.id == id } }
 
@@ -140,7 +148,15 @@ private fun ConnectionForm(
             onManage = { showKeyManager = true },
         )
 
+        if (mode == AcpMode.CHAT) {
+            ChatAgentSelector(
+                selected = effectiveChatAgentKind,
+                onSelect = { selectedChatAgentKind = it },
+            )
+        }
+
         CommandSelector(
+            label = if (mode == AcpMode.CHAT) "Comando remoto (avanzado)" else "Comando remoto",
             commands = visibleCommands,
             hiddenCount = commands.size - visibleCommands.size,
             selected = effectiveCommand,
@@ -162,6 +178,7 @@ private fun ConnectionForm(
                     username = username.trim(),
                     keyId = keyId,
                     commandId = effectiveCommand?.id,
+                    chatAgentKind = selectedChatAgentKind,
                     acpRunDir = editing?.acpRunDir,
                     acpCwd = editing?.acpCwd,
                 )
@@ -242,9 +259,28 @@ private fun KeySelector(
     }
 }
 
+/** Selector de primer nivel en Chat: Claude Agent / Pi Agent, sin pasar por "Gestionar comandos". */
+@Composable
+private fun ChatAgentSelector(selected: ChatAgentKind, onSelect: (ChatAgentKind) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ChatAgentKind.entries.forEach { kind ->
+            FilterChip(
+                selected = selected == kind,
+                onClick = { onSelect(kind) },
+                label = { Text(kind.label) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CommandSelector(
+    label: String,
     commands: List<SavedCommand>,
     hiddenCount: Int,
     selected: SavedCommand?,
@@ -260,7 +296,7 @@ private fun CommandSelector(
             value = selected?.label ?: defaultLabel,
             onValueChange = {},
             readOnly = true,
-            label = { Text("Comando remoto") },
+            label = { Text(label) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             modifier = Modifier
                 .menuAnchor(MenuAnchorType.PrimaryNotEditable)

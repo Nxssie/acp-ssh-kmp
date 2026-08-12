@@ -120,21 +120,10 @@ class DesktopProfileStoreTest {
     }
 
     @Test
-    fun defaultCommandsAreSeededOnFirstUse() {
+    fun noCommandsAreSeededOnFirstUse() {
+        // Claude Agent/Pi Agent son ChatAgentKind (ver Profiles.kt), no SavedCommand
+        // sembrados: nada custom debería aparecer sin que el usuario lo cree.
         val (store, _) = tempStore()
-        val labels = store.listCommands().map { it.label }
-        assertTrue("claude-code-acp" in labels)
-        assertTrue("pi-acp" in labels)
-    }
-
-    @Test
-    fun deletedDefaultCommandDoesNotReappearOnNextLaunch() {
-        val (store, file) = tempStore()
-        val piAcp = store.listCommands().single { it.label == "pi-acp" }
-        store.deleteCommand(piAcp.id)
-
-        val reloaded = DesktopProfileStore(file)
-        assertTrue(reloaded.listCommands().none { it.label == "pi-acp" })
-        assertTrue(reloaded.listCommands().any { it.label == "claude-code-acp" })
+        assertTrue(store.listCommands().isEmpty())
     }
 }

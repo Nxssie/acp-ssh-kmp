@@ -78,7 +78,7 @@ fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore) {
             val connection by active.connection.collectAsState()
 
             fun connect(profile: ConnectionProfile) {
-                val config = store.resolve(profile) ?: return
+                val config = store.resolve(profile, mode) ?: return
                 store.setLastProfileId(profile.id)
                 if (mode == AcpMode.TERMINAL) terminalHost.connect(config) else acpHost.connect(config)
             }

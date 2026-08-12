@@ -56,7 +56,7 @@ class ProfilesTest {
 
     @Test
     fun toTerminalConfigMapsAllFields() {
-        val config = profile.toTerminalConfig(key, command)
+        val config = profile.toTerminalConfig(key, command, AcpMode.TERMINAL)
         assertEquals("example.com", config.host)
         assertEquals(2222, config.port)
         assertEquals("carlos", config.username)
@@ -68,32 +68,60 @@ class ProfilesTest {
     }
 
     @Test
-    fun toTerminalConfigWithoutCommandLeavesNullRemoteCommand() {
-        val config = profile.copy(commandId = null).toTerminalConfig(key, null)
+    fun toTerminalConfigWithoutCommandLeavesNullRemoteCommandInTerminal() {
+        val config = profile.copy(commandId = null).toTerminalConfig(key, null, AcpMode.TERMINAL)
         assertNull(config.remoteCommand)
     }
 
     @Test
-    fun blankCommandBecomesNullRemoteCommand() {
-        val config = profile.toTerminalConfig(key, command.copy(command = "  "))
-        assertNull(config.remoteCommand)
+    fun blankCommandFallsBackToDefaultOfTheMode() {
+        val terminalConfig = profile.toTerminalConfig(key, command.copy(command = "  "), AcpMode.TERMINAL)
+        assertNull(terminalConfig.remoteCommand)
+
+        val chatConfig = profile.toTerminalConfig(key, command.copy(command = "  "), AcpMode.CHAT)
+        assertEquals(ChatAgentKind.CLAUDE.command, chatConfig.remoteCommand)
+    }
+
+    @Test
+    fun chatModeWithoutCustomCommandFallsBackToClaudeAgentByDefault() {
+        val config = profile.copy(commandId = null).toTerminalConfig(key, null, AcpMode.CHAT)
+        assertEquals(ChatAgentKind.CLAUDE.command, config.remoteCommand)
+    }
+
+    @Test
+    fun chatModeHonorsExplicitChatAgentKind() {
+        val config = profile.copy(commandId = null, chatAgentKind = ChatAgentKind.PI)
+            .toTerminalConfig(key, null, AcpMode.CHAT)
+        assertEquals(ChatAgentKind.PI.command, config.remoteCommand)
+    }
+
+    @Test
+    fun customCommandOverridesChatAgentKindEvenInChatMode() {
+        val config = profile.copy(chatAgentKind = ChatAgentKind.PI).toTerminalConfig(key, command, AcpMode.CHAT)
+        assertEquals("tmux new -As x", config.remoteCommand)
     }
 
     @Test
     fun resolveFailsWhenKeyIsMissing() {
-        assertNull(resolveProfile(profile, keys = emptyList(), commands = listOf(command)))
+        assertNull(resolveProfile(profile, keys = emptyList(), commands = listOf(command), mode = AcpMode.TERMINAL))
     }
 
     @Test
     fun resolveToleratesOrphanCommandIdAsNoCommand() {
-        val config = resolveProfile(profile.copy(commandId = "borrado"), listOf(key), emptyList())
+        val config = resolveProfile(profile.copy(commandId = "borrado"), listOf(key), emptyList(), AcpMode.TERMINAL)
         assertEquals("example.com", config?.host)
         assertNull(config?.remoteCommand)
     }
 
     @Test
+    fun resolveToleratesOrphanCommandIdAsNoCommandFallsBackToChatDefault() {
+        val config = resolveProfile(profile.copy(commandId = "borrado"), listOf(key), emptyList(), AcpMode.CHAT)
+        assertEquals(ChatAgentKind.CLAUDE.command, config?.remoteCommand)
+    }
+
+    @Test
     fun resolveFindsBothReferences() {
-        val config = resolveProfile(profile, listOf(key), listOf(command))
+        val config = resolveProfile(profile, listOf(key), listOf(command), AcpMode.TERMINAL)
         assertEquals("PEM", config?.privateKeyPem)
         assertEquals("tmux new -As x", config?.remoteCommand)
     }
