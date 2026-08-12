@@ -29,10 +29,10 @@ interface ProfileStore {
     fun setLastProfileId(id: String?)
 
     /**
-     * Último modo usado (Terminal/Chat). El botón "atrás" de Android termina
-     * la Activity de verdad — sin bundle de `rememberSaveable` que restaurar —
-     * así que sin esto el auto-reconnect siempre vuelve a Terminal aunque el
-     * usuario estuviera chateando.
+     * Último modo elegido al crear un perfil nuevo (Terminal/Chat): solo sirve
+     * de valor por defecto para preseleccionar el tipo en el formulario de
+     * "Nueva conexión" — el tipo real de conexión vive en
+     * [ConnectionProfile.mode], nunca lo sobreescribe un perfil ya guardado.
      */
     fun loadLastMode(): AcpMode?
     fun setLastMode(mode: AcpMode)
@@ -41,6 +41,6 @@ interface ProfileStore {
     fun loadSavedTabs(profileId: String): List<SavedTabSession>
     fun saveTabs(profileId: String, tabs: List<SavedTabSession>)
 
-    fun resolve(profile: ConnectionProfile, mode: AcpMode): TerminalConfig? =
-        resolveProfile(profile, listKeys(), listCommands(), mode)
+    fun resolve(profile: ConnectionProfile): TerminalConfig? =
+        resolveProfile(profile, listKeys(), listCommands())
 }

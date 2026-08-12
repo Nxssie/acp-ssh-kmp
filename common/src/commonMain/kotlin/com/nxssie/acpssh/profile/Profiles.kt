@@ -34,11 +34,17 @@ data class SavedCommand(
 
 /**
  * Perfil de conexión guardado. Referencia la clave y el comando por id (la
- * clave NUNCA se duplica dentro del perfil). [commandId] null = sin comando
- * custom: en Terminal cae al shell (default); en Chat cae a [chatAgentKind]
- * (ver decisión cerrada #5 del plan). Un [commandId] explícito es la vía
- * avanzada para reemplazar tanto el shell como Claude/Pi Agent por un
- * comando propio.
+ * clave NUNCA se duplica dentro del perfil). [mode] es el tipo de conexión
+ * (Terminal/Chat) — propiedad intrínseca del perfil, no un selector global:
+ * un perfil de Terminal siempre conecta en Terminal, sin importar qué se
+ * eligiera la última vez en la app. [commandId] null = sin comando custom:
+ * en Terminal cae al shell (default); en Chat cae a [chatAgentKind] (ver
+ * decisión cerrada #5 del plan). Un [commandId] explícito es la vía avanzada
+ * para reemplazar tanto el shell como Claude/Pi Agent por un comando propio.
+ *
+ * [mode] por defecto TERMINAL para tolerar perfiles guardados antes de que
+ * este campo existiera; un perfil de Chat de esa época necesita una revisión
+ * manual (Editar → Chat) una sola vez tras actualizar.
  */
 @Serializable
 data class ConnectionProfile(
@@ -48,6 +54,7 @@ data class ConnectionProfile(
     val port: Int = 22,
     val username: String,
     val keyId: String,
+    val mode: AcpMode = AcpMode.TERMINAL,
     val commandId: String? = null,
     val chatAgentKind: ChatAgentKind? = null,
     val acpRunDir: String? = null,
@@ -88,11 +95,12 @@ data class SavedTabSession(val tabId: String, val sessionId: String, val cwd: St
 
 /**
  * Construye la config de conexión a partir del perfil y sus referencias ya
- * resueltas. [command] (custom, opcional) manda sobre el default del modo; en
- * Chat sin comando custom cae a [ConnectionProfile.chatAgentKind] (Claude por
- * defecto); en Terminal sin comando custom no hay `remoteCommand` (shell).
+ * resueltas. [command] (custom, opcional) manda sobre el default de
+ * [ConnectionProfile.mode]; en Chat sin comando custom cae a
+ * [ConnectionProfile.chatAgentKind] (Claude por defecto); en Terminal sin
+ * comando custom no hay `remoteCommand` (shell).
  */
-fun ConnectionProfile.toTerminalConfig(key: SavedKey, command: SavedCommand?, mode: AcpMode): TerminalConfig =
+fun ConnectionProfile.toTerminalConfig(key: SavedKey, command: SavedCommand?): TerminalConfig =
     TerminalConfig(
         host = host,
         port = port,
@@ -110,15 +118,15 @@ fun ConnectionProfile.toTerminalConfig(key: SavedKey, command: SavedCommand?, mo
  * Resuelve las referencias del perfil. Devuelve null si la clave ya no existe
  * (p. ej. se borró de la lista de claves): la UI debe bloquear "Conectar" en
  * ese perfil. Un [ConnectionProfile.commandId] huérfano se tolera como "sin
- * comando custom" (cae al default explícito del modo) en vez de fallar.
+ * comando custom" (cae al default explícito de [ConnectionProfile.mode]) en
+ * vez de fallar.
  */
 fun resolveProfile(
     profile: ConnectionProfile,
     keys: List<SavedKey>,
     commands: List<SavedCommand>,
-    mode: AcpMode,
 ): TerminalConfig? {
     val key = keys.firstOrNull { it.id == profile.keyId } ?: return null
     val command = profile.commandId?.let { id -> commands.firstOrNull { it.id == id } }
-    return profile.toTerminalConfig(key, command, mode)
+    return profile.toTerminalConfig(key, command)
 }

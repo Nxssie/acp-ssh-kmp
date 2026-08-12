@@ -39,28 +39,28 @@ import com.nxssie.acpssh.session.AcpMode
 
 /**
  * Formulario de conexión (Fase G): crea o edita un [ConnectionProfile]. La
- * clave se elige de una lista gestionada (nunca se pinta el PEM). En Chat,
- * Claude Agent y Pi Agent están siempre disponibles como primera opción (sin
- * pasar por "Gestionar comandos"); el comando custom sigue existiendo como
- * vía avanzada y, si se elige uno, manda sobre el agente seleccionado. El
- * comando tiene un default explícito por modo ("shell (default)" en Terminal,
- * "Claude Agent (default)"/"Pi Agent (default)" en Chat, decisión cerrada #5)
- * en vez de ir precargado.
+ * clave se elige de una lista gestionada (nunca se pinta el PEM). El tipo de
+ * conexión (Terminal/Chat) se fija aquí, por perfil ([ConnectionProfile.mode])
+ * — no hay un selector global que lo sobreescriba después. En Chat, Claude
+ * Agent y Pi Agent están siempre disponibles como primera opción (sin pasar
+ * por "Gestionar comandos"); el comando custom sigue existiendo como vía
+ * avanzada y, si se elige uno, manda sobre el agente seleccionado. El comando
+ * tiene un default explícito por modo ("shell (default)" en Terminal, "Claude
+ * Agent (default)"/"Pi Agent (default)" en Chat, decisión cerrada #5) en vez
+ * de ir precargado.
  *
  * Al conectar se guarda el perfil (upsert por id) y se marca como último usado.
  */
 @Composable
 fun ConnectionScreen(
     editing: ConnectionProfile?,
-    mode: AcpMode,
-    onModeChange: (AcpMode) -> Unit,
     store: ProfileStore,
     onConnect: (ConnectionProfile) -> Unit,
     onCancel: () -> Unit,
 ) {
     // El estado del formulario se reinicia al cambiar de perfil editado.
     key(editing?.id ?: "new") {
-        ConnectionForm(editing, mode, onModeChange, store, onConnect, onCancel)
+        ConnectionForm(editing, store, onConnect, onCancel)
     }
 }
 
@@ -68,8 +68,6 @@ fun ConnectionScreen(
 @Composable
 private fun ConnectionForm(
     editing: ConnectionProfile?,
-    mode: AcpMode,
-    onModeChange: (AcpMode) -> Unit,
     store: ProfileStore,
     onConnect: (ConnectionProfile) -> Unit,
     onCancel: () -> Unit,
@@ -79,6 +77,9 @@ private fun ConnectionForm(
     var port by rememberSaveable { mutableStateOf((editing?.port ?: 22).toString()) }
     var username by rememberSaveable { mutableStateOf(editing?.username ?: "") }
     var selectedKeyId by rememberSaveable { mutableStateOf(editing?.keyId) }
+    // Solo importa como valor por defecto para un perfil NUEVO — al editar uno
+    // existente siempre parte de su mode ya guardado.
+    var mode by rememberSaveable { mutableStateOf(editing?.mode ?: (store.loadLastMode() ?: AcpMode.TERMINAL)) }
     var selectedCommandId by rememberSaveable { mutableStateOf(editing?.commandId) }
     var selectedChatAgentKind by rememberSaveable { mutableStateOf(editing?.chatAgentKind) }
     var showAllCommands by rememberSaveable { mutableStateOf(false) }
@@ -109,7 +110,7 @@ private fun ConnectionForm(
             style = MaterialTheme.typography.titleLarge,
         )
 
-        ModeChips(mode, onModeChange)
+        ModeChips(mode) { mode = it }
 
         OutlinedTextField(
             value = label,
@@ -184,6 +185,7 @@ private fun ConnectionForm(
                     port = port.toIntOrNull() ?: 22,
                     username = username.trim(),
                     keyId = keyId,
+                    mode = mode,
                     commandId = effectiveCommand?.id,
                     chatAgentKind = selectedChatAgentKind,
                     acpRunDir = editing?.acpRunDir,
@@ -191,6 +193,7 @@ private fun ConnectionForm(
                 )
                 store.saveProfile(profile)
                 store.setLastProfileId(profile.id)
+                store.setLastMode(mode)
                 onConnect(profile)
             },
             enabled = effectiveKeyId != null && host.isNotBlank() && username.isNotBlank(),
@@ -263,6 +266,28 @@ private fun KeySelector(
                 },
             )
         }
+    }
+}
+
+/** Selector Terminal | Chat: fija el tipo de ESTE perfil, no un modo global. */
+@Composable
+private fun ModeChips(mode: AcpMode, onModeChange: (AcpMode) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        FilterChip(
+            selected = mode == AcpMode.TERMINAL,
+            onClick = { onModeChange(AcpMode.TERMINAL) },
+            label = { Text("Terminal") },
+            modifier = Modifier.weight(1f),
+        )
+        FilterChip(
+            selected = mode == AcpMode.CHAT,
+            onClick = { onModeChange(AcpMode.CHAT) },
+            label = { Text("Chat ACP") },
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 

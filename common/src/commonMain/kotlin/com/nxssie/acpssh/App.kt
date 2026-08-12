@@ -66,27 +66,26 @@ fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore) {
             color = MaterialTheme.colorScheme.background,
         ) {
             Box(modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing)) {
-                // El botón "atrás" de Android termina la Activity de verdad, sin
-                // bundle de rememberSaveable que restaurar — por eso el valor
-                // inicial (solo se usa si NO hay bundle) viene del último modo
-                // persistido, no de un default fijo a Terminal.
-                var mode by rememberSaveable { mutableStateOf(store.loadLastMode() ?: AcpMode.TERMINAL) }
-                fun setMode(m: AcpMode) {
-                    mode = m
-                    store.setLastMode(m)
-                }
+                // El tipo de conexión (Terminal/Chat) vive en el propio perfil
+                // (ConnectionProfile.mode) — no hay selector global: conectar a
+                // un perfil de Terminal siempre usa terminalHost, sin importar
+                // qué se hubiera elegido antes para otro perfil. activeMode solo
+                // registra qué host observar mientras hay una conexión en curso;
+                // el valor inicial es irrelevante hasta que connect() lo fija.
+                var activeMode by rememberSaveable { mutableStateOf(AcpMode.TERMINAL) }
                 var screen by remember {
                     mutableStateOf<ConnectionUi>(
                         if (store.listProfiles().isEmpty()) ConnectionUi.Form(null) else ConnectionUi.Profiles,
                     )
                 }
-                val active: HasConnection = if (mode == AcpMode.TERMINAL) terminalHost else acpHost
+                val active: HasConnection = if (activeMode == AcpMode.TERMINAL) terminalHost else acpHost
                 val connection by active.connection.collectAsState()
 
                 fun connect(profile: ConnectionProfile) {
-                    val config = store.resolve(profile, mode) ?: return
+                    val config = store.resolve(profile) ?: return
                     store.setLastProfileId(profile.id)
-                    if (mode == AcpMode.TERMINAL) terminalHost.connect(config) else acpHost.connect(config)
+                    activeMode = profile.mode
+                    if (profile.mode == AcpMode.TERMINAL) terminalHost.connect(config) else acpHost.connect(config)
                 }
 
                 // Auto-reconecta al último perfil al arrancar el proceso (Android
@@ -103,7 +102,7 @@ fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore) {
                 }
 
                 when (connection.status) {
-                    ConnectStatus.CONNECTED -> when (mode) {
+                    ConnectStatus.CONNECTED -> when (activeMode) {
                         AcpMode.TERMINAL -> TerminalScreen(terminalHost)
                         AcpMode.CHAT -> ChatScreen(acpHost)
                     }
@@ -111,17 +110,15 @@ fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore) {
                     ConnectStatus.AWAITING_HOST_KEY -> HostKeyDialog(
                         pending = connection.pendingHostKey,
                         onAccept = {
-                            if (mode == AcpMode.TERMINAL) terminalHost.acceptHostKey() else acpHost.acceptHostKey()
+                            if (activeMode == AcpMode.TERMINAL) terminalHost.acceptHostKey() else acpHost.acceptHostKey()
                         },
                         onReject = {
-                            if (mode == AcpMode.TERMINAL) terminalHost.rejectHostKey() else acpHost.rejectHostKey()
+                            if (activeMode == AcpMode.TERMINAL) terminalHost.rejectHostKey() else acpHost.rejectHostKey()
                         },
                     )
                     ConnectStatus.DISCONNECTED, ConnectStatus.FAILED -> when (val s = screen) {
                         ConnectionUi.Profiles -> ProfilesScreen(
                             store = store,
-                            mode = mode,
-                            onModeChange = ::setMode,
                             error = connection.error,
                             onConnect = { profile -> connect(profile) },
                             onNew = { screen = ConnectionUi.Form(null) },
@@ -129,8 +126,6 @@ fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore) {
                         )
                         is ConnectionUi.Form -> ConnectionScreen(
                             editing = s.editing,
-                            mode = mode,
-                            onModeChange = ::setMode,
                             store = store,
                             onConnect = { profile ->
                                 screen = ConnectionUi.Profiles

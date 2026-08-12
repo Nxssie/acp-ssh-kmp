@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -30,14 +29,15 @@ import com.nxssie.acpssh.session.AcpMode
 
 /**
  * Lista de perfiles guardados (Fase G): conectar / editar / duplicar / borrar,
- * y "Nueva conexión". Un perfil cuya clave fue borrada no se puede conectar
- * (se señala en la tarjeta). El último perfil usado se marca con ★.
+ * y "Nueva conexión". El tipo de cada perfil (Terminal/Chat) es propio del
+ * perfil ([ConnectionProfile.mode], se fija al crearlo) — se muestra como
+ * etiqueta en la tarjeta, no hay un selector global que lo sobreescriba. Un
+ * perfil cuya clave fue borrada no se puede conectar (se señala en la
+ * tarjeta). El último perfil usado se marca con ★.
  */
 @Composable
 fun ProfilesScreen(
     store: ProfileStore,
-    mode: AcpMode,
-    onModeChange: (AcpMode) -> Unit,
     error: String?,
     onConnect: (ConnectionProfile) -> Unit,
     onNew: () -> Unit,
@@ -56,8 +56,6 @@ fun ProfilesScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Conexiones", style = MaterialTheme.typography.titleLarge)
-
-        ModeChips(mode, onModeChange)
 
         if (profiles.isEmpty()) {
             Text(
@@ -128,6 +126,11 @@ private fun ProfileCard(
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                 )
+                Text(
+                    if (profile.mode == AcpMode.TERMINAL) "Terminal" else "Chat",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 if (isLast) {
                     Text("★", color = MaterialTheme.colorScheme.primary)
                 }
@@ -151,27 +154,5 @@ private fun ProfileCard(
                 TextButton(onClick = onDelete) { Text("Borrar") }
             }
         }
-    }
-}
-
-/** Selector Terminal | Chat compartido por la lista de perfiles y el formulario. */
-@Composable
-internal fun ModeChips(mode: AcpMode, onModeChange: (AcpMode) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        FilterChip(
-            selected = mode == AcpMode.TERMINAL,
-            onClick = { onModeChange(AcpMode.TERMINAL) },
-            label = { Text("Terminal") },
-            modifier = Modifier.weight(1f),
-        )
-        FilterChip(
-            selected = mode == AcpMode.CHAT,
-            onClick = { onModeChange(AcpMode.CHAT) },
-            label = { Text("Chat ACP") },
-            modifier = Modifier.weight(1f),
-        )
     }
 }
