@@ -151,7 +151,14 @@ private fun ConnectionForm(
         if (mode == AcpMode.CHAT) {
             ChatAgentSelector(
                 selected = effectiveChatAgentKind,
-                onSelect = { selectedChatAgentKind = it },
+                onSelect = {
+                    selectedChatAgentKind = it
+                    // Un comando custom heredado de antes de que existiera este
+                    // selector (o de una elección avanzada previa) manda sobre
+                    // chatAgentKind en la resolución — sin limpiarlo aquí, elegir
+                    // un chip no cambiaría el agente que realmente se lanza.
+                    selectedCommandId = null
+                },
             )
         }
 
