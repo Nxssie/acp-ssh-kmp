@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The platform has no Theme.DeviceDefault.DayNight.NoActionBar (only the
+      library-provided AppCompat/MaterialComponents families combine
+      DayNight with NoActionBar) — this app has neither dependency, so the
+      action bar is disabled explicitly on top of the plain DayNight theme.
+    -->
+    <style name="Theme.AcpSsh" parent="android:Theme.DeviceDefault.DayNight">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+    </style>
+</resources>
