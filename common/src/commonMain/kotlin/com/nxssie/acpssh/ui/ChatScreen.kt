@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -288,7 +289,21 @@ private fun ChatContent(
         }
     }
 
-    Column(modifier.fillMaxWidth()) {
+    // Al desplegar/ocultar el teclado, el viewport de la LazyColumn cambia de
+    // alto (imePadding() la encoge o expande) pero ni totalItems ni el texto
+    // cambian — sin este efecto, el scroll se queda anclado a la posición
+    // vieja y deja un hueco vacío entre el último mensaje y el teclado hasta
+    // que llega el próximo mensaje.
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.layoutInfo.viewportSize }.collect {
+            val count = listState.layoutInfo.totalItemsCount
+            if (count > 0 && stickToBottom.value) {
+                listState.scrollToItem(count - 1)
+            }
+        }
+    }
+
+    Column(modifier.fillMaxWidth().imePadding()) {
         ChatHeader(state, onDisconnect, onCloseTab, onKillAgent, onShowRemoteSessions, onShowLog)
 
         val configOptions = state.configOptions.filter { it.id.isNotBlank() }
@@ -708,42 +723,60 @@ private fun PlanCard(plan: List<PlanEntryUi>) {
     }
 }
 
+/**
+ * A diferencia de [Bubble], una tool call no es contenido conversacional —
+ * es telemetría de lo que el agente está haciendo. Antes usaba el mismo peso
+ * visual que un mensaje (card a todo el ancho, surfaceContainerHigh) y con
+ * varias tool calls seguidas se apilaban como una pared de cards igual de
+ * llamativas que el propio texto, justo antes del input. Se recorta a un
+ * ancho tipo burbuja y un estilo de chip discreto (fila fina, sin relleno de
+ * card) — sigue "anclada" a su posición en el timeline, solo deja de competir
+ * visualmente por atención salvo que se expanda a propósito.
+ */
 @Composable
 private fun ToolCallCard(tool: ToolCallUi, onToggle: () -> Unit) {
-    Surface(
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onToggle),
-    ) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(com.nxssie.acpssh.acp.ToolKind.icon(tool.kind), style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    tool.title.ifEmpty { tool.id },
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    ToolCallStatus.label(tool.status),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = statusColor(tool.status),
-                )
-            }
-            if (tool.expanded) {
-                tool.input?.let {
-                    Text("Entrada", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 12)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            modifier = Modifier
+                .widthIn(max = 320.dp)
+                .clickable(onClick = onToggle),
+        ) {
+            Column(
+                Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(com.nxssie.acpssh.acp.ToolKind.icon(tool.kind), style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        tool.title.ifEmpty { tool.id },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        ToolCallStatus.label(tool.status),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = statusColor(tool.status),
+                    )
                 }
-                tool.diffs.forEach { diff ->
-                    DiffView(diff.path, diff.oldText, diff.newText)
-                }
-                tool.output?.let {
-                    Text("Salida", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 12)
+                if (tool.expanded) {
+                    tool.input?.let {
+                        Text("Entrada", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 12)
+                    }
+                    tool.diffs.forEach { diff ->
+                        DiffView(diff.path, diff.oldText, diff.newText)
+                    }
+                    tool.output?.let {
+                        Text("Salida", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 12)
+                    }
                 }
             }
         }
