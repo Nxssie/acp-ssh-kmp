@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -288,7 +289,21 @@ private fun ChatContent(
         }
     }
 
-    Column(modifier.fillMaxWidth()) {
+    // Al desplegar/ocultar el teclado, el viewport de la LazyColumn cambia de
+    // alto (imePadding() la encoge o expande) pero ni totalItems ni el texto
+    // cambian — sin este efecto, el scroll se queda anclado a la posición
+    // vieja y deja un hueco vacío entre el último mensaje y el teclado hasta
+    // que llega el próximo mensaje.
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.layoutInfo.viewportSize }.collect {
+            val count = listState.layoutInfo.totalItemsCount
+            if (count > 0 && stickToBottom.value) {
+                listState.scrollToItem(count - 1)
+            }
+        }
+    }
+
+    Column(modifier.fillMaxWidth().imePadding()) {
         ChatHeader(state, onDisconnect, onCloseTab, onKillAgent, onShowRemoteSessions, onShowLog)
 
         val configOptions = state.configOptions.filter { it.id.isNotBlank() }

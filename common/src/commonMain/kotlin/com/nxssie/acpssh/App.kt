@@ -3,7 +3,9 @@ package com.nxssie.acpssh
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -65,7 +67,12 @@ fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore) {
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background,
         ) {
-            Box(modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing)) {
+            // El teclado (IME) se excluye aquí a propósito: solo ChatScreen tiene un
+            // layout con weight(1f) que necesita reaccionar de inmediato al inset del
+            // IME (imePadding() local) — aplicarlo también en esta raíz compartida por
+            // todas las pantallas duplica el padding inferior y deja un hueco vacío del
+            // alto del teclado entre el último mensaje y el input al desplegarlo.
+            Box(modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime))) {
                 // El tipo de conexión (Terminal/Chat) vive en el propio perfil
                 // (ConnectionProfile.mode) — no hay selector global: conectar a
                 // un perfil de Terminal siempre usa terminalHost, sin importar
