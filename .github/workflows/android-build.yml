@@ -36,10 +36,17 @@ jobs:
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -XX:MaxDirectMemorySize=512m"
         run: ./gradlew :common:desktopTest --no-daemon
 
-      - name: Build debug APK
+      - name: Decode release keystore
+        run: echo "${{ secrets.ACP_SSH_KMP_RELEASE_KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/release.keystore.jks"
+
+      - name: Build release APK
         env:
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -XX:MaxDirectMemorySize=512m"
-        run: ./gradlew :android:assembleDebug --no-daemon
+          ACP_SSH_KMP_RELEASE_KEYSTORE_PATH: ${{ runner.temp }}/release.keystore.jks
+          ACP_SSH_KMP_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ACP_SSH_KMP_RELEASE_KEYSTORE_PASSWORD }}
+          ACP_SSH_KMP_RELEASE_KEY_ALIAS: ${{ secrets.ACP_SSH_KMP_RELEASE_KEY_ALIAS }}
+          ACP_SSH_KMP_RELEASE_KEY_PASSWORD: ${{ secrets.ACP_SSH_KMP_RELEASE_KEY_PASSWORD }}
+        run: ./gradlew :android:assembleRelease --no-daemon
 
       - name: Compute build version
         id: version
@@ -57,14 +64,14 @@ jobs:
 
       - name: Rename APK
         run: |
-          mv android/build/outputs/apk/debug/android-debug.apk \
-             "android/build/outputs/apk/debug/${{ steps.version.outputs.apk_name }}"
+          mv android/build/outputs/apk/release/android-release.apk \
+             "android/build/outputs/apk/release/${{ steps.version.outputs.apk_name }}"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.version.outputs.apk_name }}
-          path: android/build/outputs/apk/debug/${{ steps.version.outputs.apk_name }}
+          path: android/build/outputs/apk/release/${{ steps.version.outputs.apk_name }}
           if-no-files-found: error
 
       - name: Publish versioned release
@@ -72,8 +79,8 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.apk_name }}
-          body: "Automated debug APK build from ${{ github.sha }}."
+          body: "Automated signed release APK build from ${{ github.sha }}."
           prerelease: true
-          files: android/build/outputs/apk/debug/${{ steps.version.outputs.apk_name }}
+          files: android/build/outputs/apk/release/${{ steps.version.outputs.apk_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

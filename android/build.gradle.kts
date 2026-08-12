@@ -41,6 +41,29 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        // Keystore de release autofirmado (NUNCA committeado): la ruta y las
+        // contraseñas vienen de env vars (~/.config/fish/conf.d/secrets.fish en
+        // local, GitHub Actions secrets en CI — ver ACP_SSH_KMP_RELEASE_* en
+        // shell/secrets.fish.example de harnxss). Firmar con debug (autofirmado
+        // pero sin identidad estable entre máquinas) es lo que hacía saltar el
+        // aviso de Play Protect al distribuir fuera de Play Store; sin estas env
+        // vars, `assembleRelease` produce un APK sin firmar (fallo explícito al
+        // instalar, no una firma incorrecta silenciosa).
+        val releaseKeystorePath = System.getenv("ACP_SSH_KMP_RELEASE_KEYSTORE_PATH")
+        if (releaseKeystorePath != null) {
+            create("release") {
+                storeFile = file(releaseKeystorePath)
+                storePassword = System.getenv("ACP_SSH_KMP_RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ACP_SSH_KMP_RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("ACP_SSH_KMP_RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfigs.findByName("release")?.let { signingConfig = it }
+        }
     }
 }
 
