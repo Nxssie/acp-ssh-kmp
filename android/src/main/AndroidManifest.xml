@@ -6,7 +6,7 @@
     <application
         android:label="ACP Terminal"
         android:allowBackup="false"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@android:style/Theme.DeviceDefault.DayNight.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true">

@@ -54,84 +54,91 @@ private sealed interface ConnectionUi {
 fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore) {
     val colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
     MaterialTheme(colorScheme = colorScheme) {
+        // El fondo del Surface llega hasta el borde real de la pantalla (sin
+        // windowInsetsPadding aquí): en Android, con enableEdgeToEdge(), la
+        // franja de la barra de estado/navegación es transparente y se ve lo
+        // que haya debajo. Si el padding fuera del Surface, ese hueco
+        // quedaría en el fondo nativo de la Activity (blanco, ver
+        // AndroidManifest.xml) en vez del color del tema actual — el padding
+        // va en el contenido, no en el fondo.
         Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.safeDrawing),
+            modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background,
         ) {
-            // El botón "atrás" de Android termina la Activity de verdad, sin
-            // bundle de rememberSaveable que restaurar — por eso el valor
-            // inicial (solo se usa si NO hay bundle) viene del último modo
-            // persistido, no de un default fijo a Terminal.
-            var mode by rememberSaveable { mutableStateOf(store.loadLastMode() ?: AcpMode.TERMINAL) }
-            fun setMode(m: AcpMode) {
-                mode = m
-                store.setLastMode(m)
-            }
-            var screen by remember {
-                mutableStateOf<ConnectionUi>(
-                    if (store.listProfiles().isEmpty()) ConnectionUi.Form(null) else ConnectionUi.Profiles,
-                )
-            }
-            val active: HasConnection = if (mode == AcpMode.TERMINAL) terminalHost else acpHost
-            val connection by active.connection.collectAsState()
-
-            fun connect(profile: ConnectionProfile) {
-                val config = store.resolve(profile, mode) ?: return
-                store.setLastProfileId(profile.id)
-                if (mode == AcpMode.TERMINAL) terminalHost.connect(config) else acpHost.connect(config)
-            }
-
-            // Auto-reconecta al último perfil al arrancar el proceso (Android
-            // puede matarlo en background): sin esto, cada reinicio del proceso
-            // vuelve siempre a la lista de perfiles y hay que tocar "Conectar" a
-            // mano aunque el agente remoto siga vivo y la sesión ACP sea
-            // retomable (AcpSessionManager + session/load). Solo corre una vez
-            // por composición (LaunchedEffect(Unit)): no reintenta si el usuario
-            // desconecta manualmente después.
-            LaunchedEffect(Unit) {
-                val lastId = store.loadLastProfileId()
-                val profile = lastId?.let { id -> store.listProfiles().firstOrNull { it.id == id } }
-                if (profile != null) connect(profile)
-            }
-
-            when (connection.status) {
-                ConnectStatus.CONNECTED -> when (mode) {
-                    AcpMode.TERMINAL -> TerminalScreen(terminalHost)
-                    AcpMode.CHAT -> ChatScreen(acpHost)
+            Box(modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing)) {
+                // El botón "atrás" de Android termina la Activity de verdad, sin
+                // bundle de rememberSaveable que restaurar — por eso el valor
+                // inicial (solo se usa si NO hay bundle) viene del último modo
+                // persistido, no de un default fijo a Terminal.
+                var mode by rememberSaveable { mutableStateOf(store.loadLastMode() ?: AcpMode.TERMINAL) }
+                fun setMode(m: AcpMode) {
+                    mode = m
+                    store.setLastMode(m)
                 }
-                ConnectStatus.CONNECTING -> LoadingScreen()
-                ConnectStatus.AWAITING_HOST_KEY -> HostKeyDialog(
-                    pending = connection.pendingHostKey,
-                    onAccept = {
-                        if (mode == AcpMode.TERMINAL) terminalHost.acceptHostKey() else acpHost.acceptHostKey()
-                    },
-                    onReject = {
-                        if (mode == AcpMode.TERMINAL) terminalHost.rejectHostKey() else acpHost.rejectHostKey()
-                    },
-                )
-                ConnectStatus.DISCONNECTED, ConnectStatus.FAILED -> when (val s = screen) {
-                    ConnectionUi.Profiles -> ProfilesScreen(
-                        store = store,
-                        mode = mode,
-                        onModeChange = ::setMode,
-                        error = connection.error,
-                        onConnect = { profile -> connect(profile) },
-                        onNew = { screen = ConnectionUi.Form(null) },
-                        onEdit = { screen = ConnectionUi.Form(it) },
+                var screen by remember {
+                    mutableStateOf<ConnectionUi>(
+                        if (store.listProfiles().isEmpty()) ConnectionUi.Form(null) else ConnectionUi.Profiles,
                     )
-                    is ConnectionUi.Form -> ConnectionScreen(
-                        editing = s.editing,
-                        mode = mode,
-                        onModeChange = ::setMode,
-                        store = store,
-                        onConnect = { profile ->
-                            screen = ConnectionUi.Profiles
-                            connect(profile)
+                }
+                val active: HasConnection = if (mode == AcpMode.TERMINAL) terminalHost else acpHost
+                val connection by active.connection.collectAsState()
+
+                fun connect(profile: ConnectionProfile) {
+                    val config = store.resolve(profile, mode) ?: return
+                    store.setLastProfileId(profile.id)
+                    if (mode == AcpMode.TERMINAL) terminalHost.connect(config) else acpHost.connect(config)
+                }
+
+                // Auto-reconecta al último perfil al arrancar el proceso (Android
+                // puede matarlo en background): sin esto, cada reinicio del proceso
+                // vuelve siempre a la lista de perfiles y hay que tocar "Conectar" a
+                // mano aunque el agente remoto siga vivo y la sesión ACP sea
+                // retomable (AcpSessionManager + session/load). Solo corre una vez
+                // por composición (LaunchedEffect(Unit)): no reintenta si el usuario
+                // desconecta manualmente después.
+                LaunchedEffect(Unit) {
+                    val lastId = store.loadLastProfileId()
+                    val profile = lastId?.let { id -> store.listProfiles().firstOrNull { it.id == id } }
+                    if (profile != null) connect(profile)
+                }
+
+                when (connection.status) {
+                    ConnectStatus.CONNECTED -> when (mode) {
+                        AcpMode.TERMINAL -> TerminalScreen(terminalHost)
+                        AcpMode.CHAT -> ChatScreen(acpHost)
+                    }
+                    ConnectStatus.CONNECTING -> LoadingScreen()
+                    ConnectStatus.AWAITING_HOST_KEY -> HostKeyDialog(
+                        pending = connection.pendingHostKey,
+                        onAccept = {
+                            if (mode == AcpMode.TERMINAL) terminalHost.acceptHostKey() else acpHost.acceptHostKey()
                         },
-                        onCancel = { screen = ConnectionUi.Profiles },
+                        onReject = {
+                            if (mode == AcpMode.TERMINAL) terminalHost.rejectHostKey() else acpHost.rejectHostKey()
+                        },
                     )
+                    ConnectStatus.DISCONNECTED, ConnectStatus.FAILED -> when (val s = screen) {
+                        ConnectionUi.Profiles -> ProfilesScreen(
+                            store = store,
+                            mode = mode,
+                            onModeChange = ::setMode,
+                            error = connection.error,
+                            onConnect = { profile -> connect(profile) },
+                            onNew = { screen = ConnectionUi.Form(null) },
+                            onEdit = { screen = ConnectionUi.Form(it) },
+                        )
+                        is ConnectionUi.Form -> ConnectionScreen(
+                            editing = s.editing,
+                            mode = mode,
+                            onModeChange = ::setMode,
+                            store = store,
+                            onConnect = { profile ->
+                                screen = ConnectionUi.Profiles
+                                connect(profile)
+                            },
+                            onCancel = { screen = ConnectionUi.Profiles },
+                        )
+                    }
                 }
             }
         }
