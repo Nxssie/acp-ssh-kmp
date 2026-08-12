@@ -50,6 +50,10 @@ interface ProfileStore {
     fun loadReceivePrereleaseUpdates(): Boolean
     fun setReceivePrereleaseUpdates(value: Boolean)
 
+    /** Override manual de tema claro/oscuro. Default [AppTheme.SYSTEM]: sigue el sistema. */
+    fun loadAppTheme(): AppTheme
+    fun setAppTheme(theme: AppTheme)
+
     fun resolve(profile: ConnectionProfile): TerminalConfig? =
         resolveProfile(profile, listKeys(), listCommands())
 }

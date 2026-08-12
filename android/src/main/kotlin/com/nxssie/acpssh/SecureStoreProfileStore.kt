@@ -1,6 +1,7 @@
 package com.nxssie.acpssh
 
 import android.content.Context
+import com.nxssie.acpssh.profile.AppTheme
 import com.nxssie.acpssh.profile.ConnectionProfile
 import com.nxssie.acpssh.profile.ProfileStore
 import com.nxssie.acpssh.profile.SavedCommand
@@ -95,6 +96,13 @@ class SecureStoreProfileStore(context: Context) : ProfileStore {
         prefs.edit().putBoolean(KEY_RECEIVE_PRERELEASES, value).apply()
     }
 
+    override fun loadAppTheme(): AppTheme =
+        prefs.getString(KEY_APP_THEME, null)?.let { runCatching { AppTheme.valueOf(it) }.getOrNull() } ?: AppTheme.SYSTEM
+
+    override fun setAppTheme(theme: AppTheme) {
+        prefs.edit().putString(KEY_APP_THEME, theme.name).apply()
+    }
+
     private fun migrateLegacyConfig() {
         if (prefs.contains(KEY_PROFILES)) return
         val host = prefs.getString(LEGACY_HOST, null) ?: return
@@ -158,6 +166,7 @@ class SecureStoreProfileStore(context: Context) : ProfileStore {
         const val KEY_LAST_PROFILE = "last_profile"
         const val KEY_LAST_MODE = "last_mode"
         const val KEY_RECEIVE_PRERELEASES = "receive_prereleases"
+        const val KEY_APP_THEME = "app_theme"
 
         const val LEGACY_HOST = "host"
         const val LEGACY_PORT = "port"

@@ -19,8 +19,8 @@ class MainActivity : ComponentActivity() {
         profileStore = SecureStoreProfileStore(applicationContext)
         acpHost = AndroidAcpHost(applicationContext, profileStore)
         setContent {
-            UpdateGate(profileStore) {
-                App(terminalHost, acpHost, profileStore)
+            UpdateGate(profileStore) { forceDarkTheme ->
+                App(terminalHost, acpHost, profileStore, forceDarkTheme)
             }
         }
     }

@@ -1,5 +1,6 @@
 package com.nxssie.acpssh
 
+import com.nxssie.acpssh.profile.AppTheme
 import com.nxssie.acpssh.profile.ConnectionProfile
 import com.nxssie.acpssh.profile.ProfileStore
 import com.nxssie.acpssh.profile.SavedCommand
@@ -80,6 +81,13 @@ class DesktopProfileStore(
         mutate { it.copy(receivePrereleaseUpdates = value) }
     }
 
+    override fun loadAppTheme(): AppTheme =
+        load().appTheme?.let { runCatching { AppTheme.valueOf(it) }.getOrNull() } ?: AppTheme.SYSTEM
+
+    override fun setAppTheme(theme: AppTheme) {
+        mutate { it.copy(appTheme = theme.name) }
+    }
+
     override fun loadSavedTabs(profileId: String): List<SavedTabSession> = load().tabsByProfile[profileId].orEmpty()
 
     override fun saveTabs(profileId: String, tabs: List<SavedTabSession>) {
@@ -136,5 +144,6 @@ class DesktopProfileStore(
         val tabsByProfile: Map<String, List<SavedTabSession>> = emptyMap(),
         val lastMode: String? = null,
         val receivePrereleaseUpdates: Boolean = true,
+        val appTheme: String? = null,
     )
 }

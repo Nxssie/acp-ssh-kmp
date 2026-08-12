@@ -53,8 +53,9 @@ private sealed interface ConnectionUi {
  * Sin perfiles guardados se entra directo al formulario.
  */
 @Composable
-fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore) {
-    val colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
+fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore, forceDarkTheme: Boolean? = null) {
+    val dark = forceDarkTheme ?: isSystemInDarkTheme()
+    val colorScheme = if (dark) darkColorScheme() else lightColorScheme()
     MaterialTheme(colorScheme = colorScheme) {
         // El fondo del Surface llega hasta el borde real de la pantalla (sin
         // windowInsetsPadding aquí): en Android, con enableEdgeToEdge(), la
