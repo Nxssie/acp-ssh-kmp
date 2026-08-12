@@ -41,6 +41,15 @@ interface ProfileStore {
     fun loadSavedTabs(profileId: String): List<SavedTabSession>
     fun saveTabs(profileId: String, tabs: List<SavedTabSession>)
 
+    /**
+     * Si el autoupdate de Android (ver `update/UpdateChecker`) debe ofrecer también
+     * builds marcados como pre-release. Default `true`: hoy `android-build.yml`
+     * publica *todos* los releases como pre-release (no hay canal estable), así que
+     * `false` significaría "nunca actualizar" hasta que exista un release estable.
+     */
+    fun loadReceivePrereleaseUpdates(): Boolean
+    fun setReceivePrereleaseUpdates(value: Boolean)
+
     fun resolve(profile: ConnectionProfile): TerminalConfig? =
         resolveProfile(profile, listKeys(), listCommands())
 }

@@ -21,24 +21,38 @@ import kotlinx.serialization.json.jsonPrimitive
  */
 object UpdateChecker {
 
-    // "/releases/latest" ignora los prerelease (todos los builds de CI lo son
-    // — ver android-build.yml) y devuelve 404 siempre: el autoupdate nunca
-    // encontraba nada. La lista completa viene ordenada por fecha de
-    // creación descendente, así que el primer elemento es el build real más
-    // reciente, sea o no prerelease.
-    private const val RELEASES_API = "https://api.github.com/repos/Nxssie/acp-ssh-kmp/releases?per_page=1"
+    // "/releases/latest" ignora los pre-release por definición de la API — es lo
+    // que queremos cuando el usuario prefiere solo canal estable. Hoy
+    // android-build.yml publica *todos* los builds como pre-release (no hay
+    // canal estable aún), así que con ese endpoint el checker nunca encuentra
+    // nada hasta que exista un release no marcado como pre-release.
+    private const val RELEASES_LATEST_STABLE_API = "https://api.github.com/repos/Nxssie/acp-ssh-kmp/releases/latest"
+
+    // Lista completa ordenada por fecha de creación descendente: el primer
+    // elemento es el build más reciente sea o no pre-release. La usamos cuando
+    // el usuario optó por recibir también los pre-release.
+    private const val RELEASES_LIST_API = "https://api.github.com/repos/Nxssie/acp-ssh-kmp/releases?per_page=1"
 
     /** El tag de release siempre es "v<versionName>-<versionCode>-<shortSha>" (ver CI). */
     private val TAG_VERSION_CODE = Regex("""^v[\d.]+-(\d+)-[0-9a-f]+$""")
 
     data class LatestRelease(val tag: String, val versionCode: Long, val apkUrl: String, val apkName: String)
 
-    /** Devuelve el último release si es más nuevo que [currentVersionCode]; null si no hay nada que actualizar o falla la consulta. */
-    suspend fun checkForUpdate(currentVersionCode: Long): LatestRelease? = withContext(Dispatchers.IO) {
+    /**
+     * Devuelve el último release si es más nuevo que [currentVersionCode]; null si no
+     * hay nada que actualizar o falla la consulta. [includePrereleases] decide el canal
+     * (ver [ProfileStore.loadReceivePrereleaseUpdates][com.nxssie.acpssh.profile.ProfileStore]).
+     */
+    suspend fun checkForUpdate(currentVersionCode: Long, includePrereleases: Boolean): LatestRelease? =
+        withContext(Dispatchers.IO) {
         runCatching {
-            val body = httpGetText(RELEASES_API)
-            val root = Json.parseToJsonElement(body).jsonArray.firstOrNull()?.jsonObject
-                ?: return@runCatching null
+            val root = if (includePrereleases) {
+                val body = httpGetText(RELEASES_LIST_API)
+                Json.parseToJsonElement(body).jsonArray.firstOrNull()?.jsonObject ?: return@runCatching null
+            } else {
+                val body = httpGetText(RELEASES_LATEST_STABLE_API)
+                Json.parseToJsonElement(body).jsonObject
+            }
             val tag = root["tag_name"]?.jsonPrimitive?.content ?: return@runCatching null
             val versionCode = TAG_VERSION_CODE.matchEntire(tag)?.groupValues?.get(1)?.toLongOrNull()
                 ?: return@runCatching null

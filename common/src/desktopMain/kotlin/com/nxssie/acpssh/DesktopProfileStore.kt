@@ -74,6 +74,12 @@ class DesktopProfileStore(
         mutate { it.copy(lastMode = mode.name) }
     }
 
+    override fun loadReceivePrereleaseUpdates(): Boolean = load().receivePrereleaseUpdates
+
+    override fun setReceivePrereleaseUpdates(value: Boolean) {
+        mutate { it.copy(receivePrereleaseUpdates = value) }
+    }
+
     override fun loadSavedTabs(profileId: String): List<SavedTabSession> = load().tabsByProfile[profileId].orEmpty()
 
     override fun saveTabs(profileId: String, tabs: List<SavedTabSession>) {
@@ -129,5 +135,6 @@ class DesktopProfileStore(
         val lastProfileId: String? = null,
         val tabsByProfile: Map<String, List<SavedTabSession>> = emptyMap(),
         val lastMode: String? = null,
+        val receivePrereleaseUpdates: Boolean = true,
     )
 }
