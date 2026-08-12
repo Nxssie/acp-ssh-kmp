@@ -21,7 +21,12 @@ import kotlinx.serialization.json.jsonPrimitive
  */
 object UpdateChecker {
 
-    private const val RELEASES_API = "https://api.github.com/repos/Nxssie/acp-ssh-kmp/releases/latest"
+    // "/releases/latest" ignora los prerelease (todos los builds de CI lo son
+    // — ver android-build.yml) y devuelve 404 siempre: el autoupdate nunca
+    // encontraba nada. La lista completa viene ordenada por fecha de
+    // creación descendente, así que el primer elemento es el build real más
+    // reciente, sea o no prerelease.
+    private const val RELEASES_API = "https://api.github.com/repos/Nxssie/acp-ssh-kmp/releases?per_page=1"
 
     /** El tag de release siempre es "v<versionName>-<versionCode>-<shortSha>" (ver CI). */
     private val TAG_VERSION_CODE = Regex("""^v[\d.]+-(\d+)-[0-9a-f]+$""")
@@ -32,7 +37,8 @@ object UpdateChecker {
     suspend fun checkForUpdate(currentVersionCode: Long): LatestRelease? = withContext(Dispatchers.IO) {
         runCatching {
             val body = httpGetText(RELEASES_API)
-            val root = Json.parseToJsonElement(body).jsonObject
+            val root = Json.parseToJsonElement(body).jsonArray.firstOrNull()?.jsonObject
+                ?: return@runCatching null
             val tag = root["tag_name"]?.jsonPrimitive?.content ?: return@runCatching null
             val versionCode = TAG_VERSION_CODE.matchEntire(tag)?.groupValues?.get(1)?.toLongOrNull()
                 ?: return@runCatching null
