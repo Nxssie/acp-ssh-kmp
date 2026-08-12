@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -35,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.nxssie.acpssh.profile.AppTheme
 import com.nxssie.acpssh.profile.ProfileStore
 import kotlinx.coroutines.launch
 
@@ -58,11 +61,12 @@ private sealed interface UpdateState {
  * QA formal a quien prefiera esperar a un release estable el día que exista.
  */
 @Composable
-fun UpdateGate(profileStore: ProfileStore, content: @Composable () -> Unit) {
+fun UpdateGate(profileStore: ProfileStore, content: @Composable (forceDarkTheme: Boolean?) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf<UpdateState>(UpdateState.Hidden) }
     var receivePrereleases by remember { mutableStateOf(profileStore.loadReceivePrereleaseUpdates()) }
+    var appTheme by remember { mutableStateOf(profileStore.loadAppTheme()) }
     var showSettings by remember { mutableStateOf(false) }
 
     LaunchedEffect(receivePrereleases) {
@@ -86,8 +90,14 @@ fun UpdateGate(profileStore: ProfileStore, content: @Composable () -> Unit) {
         }
     }
 
+    val forceDarkTheme = when (appTheme) {
+        AppTheme.SYSTEM -> null
+        AppTheme.LIGHT -> false
+        AppTheme.DARK -> true
+    }
+
     Box(Modifier.fillMaxSize()) {
-        content()
+        content(forceDarkTheme)
         IconButton(
             onClick = { showSettings = true },
             modifier = Modifier
@@ -96,7 +106,7 @@ fun UpdateGate(profileStore: ProfileStore, content: @Composable () -> Unit) {
         ) {
             Icon(
                 Icons.Default.Settings,
-                contentDescription = "Ajustes de actualización",
+                contentDescription = "Ajustes",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                 modifier = Modifier.size(18.dp),
             )
@@ -106,27 +116,47 @@ fun UpdateGate(profileStore: ProfileStore, content: @Composable () -> Unit) {
     if (showSettings) {
         AlertDialog(
             onDismissRequest = { showSettings = false },
-            title = { Text("Actualizaciones") },
+            title = { Text("Ajustes") },
             text = {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Recibir compilaciones pre-release")
-                        Text(
-                            "Hoy es el único canal disponible: apágalo para esperar a un release estable.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Tema", style = MaterialTheme.typography.labelLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ThemeOption("Sistema", AppTheme.SYSTEM, appTheme) {
+                            appTheme = it
+                            profileStore.setAppTheme(it)
+                        }
+                        ThemeOption("Claro", AppTheme.LIGHT, appTheme) {
+                            appTheme = it
+                            profileStore.setAppTheme(it)
+                        }
+                        ThemeOption("Oscuro", AppTheme.DARK, appTheme) {
+                            appTheme = it
+                            profileStore.setAppTheme(it)
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Recibir compilaciones pre-release")
+                            Text(
+                                "Hoy es el único canal disponible: apágalo para esperar a un release estable.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = receivePrereleases,
+                            onCheckedChange = {
+                                receivePrereleases = it
+                                profileStore.setReceivePrereleaseUpdates(it)
+                            },
                         )
                     }
-                    Switch(
-                        checked = receivePrereleases,
-                        onCheckedChange = {
-                            receivePrereleases = it
-                            profileStore.setReceivePrereleaseUpdates(it)
-                        },
-                    )
                 }
             },
             confirmButton = { TextButton(onClick = { showSettings = false }) { Text("Cerrar") } },
@@ -192,4 +222,13 @@ fun UpdateGate(profileStore: ProfileStore, content: @Composable () -> Unit) {
             confirmButton = { TextButton(onClick = { state = UpdateState.Hidden }) { Text("Cerrar") } },
         )
     }
+}
+
+@Composable
+private fun ThemeOption(label: String, value: AppTheme, current: AppTheme, onSelect: (AppTheme) -> Unit) {
+    FilterChip(
+        selected = value == current,
+        onClick = { onSelect(value) },
+        label = { Text(label) },
+    )
 }
