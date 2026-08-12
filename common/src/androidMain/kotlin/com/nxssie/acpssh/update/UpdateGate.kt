@@ -3,12 +3,25 @@ package com.nxssie.acpssh.update
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -18,9 +31,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.nxssie.acpssh.profile.ProfileStore
 import kotlinx.coroutines.launch
 
 /** Estado del flujo de autoupdate mostrado sobre el contenido normal de la app. */
@@ -36,17 +51,24 @@ private sealed interface UpdateState {
  * Envuelve [content]: al componerse, consulta GitHub Releases (Fase K) y, si
  * hay una versión más nueva que la instalada, la ofrece encima como diálogo
  * — sin bloquear el resto de la UI mientras tanto (Hidden es el caso común).
+ *
+ * También expone, con un icono discreto en la esquina, el ajuste de si se
+ * quiere recibir el canal de pre-release — hoy es el único canal que existe
+ * (ver [UpdateChecker]), pero mantenerlo apagable evita instalar builds sin
+ * QA formal a quien prefiera esperar a un release estable el día que exista.
  */
 @Composable
-fun UpdateGate(content: @Composable () -> Unit) {
+fun UpdateGate(profileStore: ProfileStore, content: @Composable () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf<UpdateState>(UpdateState.Hidden) }
+    var receivePrereleases by remember { mutableStateOf(profileStore.loadReceivePrereleaseUpdates()) }
+    var showSettings by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(receivePrereleases) {
         val currentVersionCode = context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
-        val release = UpdateChecker.checkForUpdate(currentVersionCode)
-        if (release != null) state = UpdateState.Available(release)
+        val release = UpdateChecker.checkForUpdate(currentVersionCode, receivePrereleases)
+        state = if (release != null) UpdateState.Available(release) else UpdateState.Hidden
     }
 
     fun startDownload(release: UpdateChecker.LatestRelease) {
@@ -64,7 +86,52 @@ fun UpdateGate(content: @Composable () -> Unit) {
         }
     }
 
-    content()
+    Box(Modifier.fillMaxSize()) {
+        content()
+        IconButton(
+            onClick = { showSettings = true },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .windowInsetsPadding(WindowInsets.safeDrawing),
+        ) {
+            Icon(
+                Icons.Default.Settings,
+                contentDescription = "Ajustes de actualización",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+
+    if (showSettings) {
+        AlertDialog(
+            onDismissRequest = { showSettings = false },
+            title = { Text("Actualizaciones") },
+            text = {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Recibir compilaciones pre-release")
+                        Text(
+                            "Hoy es el único canal disponible: apágalo para esperar a un release estable.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = receivePrereleases,
+                        onCheckedChange = {
+                            receivePrereleases = it
+                            profileStore.setReceivePrereleaseUpdates(it)
+                        },
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { showSettings = false }) { Text("Cerrar") } },
+        )
+    }
 
     when (val s = state) {
         UpdateState.Hidden -> Unit

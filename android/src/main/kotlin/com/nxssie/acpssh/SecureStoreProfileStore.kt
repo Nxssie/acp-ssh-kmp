@@ -89,6 +89,12 @@ class SecureStoreProfileStore(context: Context) : ProfileStore {
 
     private fun tabsKey(profileId: String) = "tabs:$profileId"
 
+    override fun loadReceivePrereleaseUpdates(): Boolean = prefs.getBoolean(KEY_RECEIVE_PRERELEASES, true)
+
+    override fun setReceivePrereleaseUpdates(value: Boolean) {
+        prefs.edit().putBoolean(KEY_RECEIVE_PRERELEASES, value).apply()
+    }
+
     private fun migrateLegacyConfig() {
         if (prefs.contains(KEY_PROFILES)) return
         val host = prefs.getString(LEGACY_HOST, null) ?: return
@@ -151,6 +157,7 @@ class SecureStoreProfileStore(context: Context) : ProfileStore {
         const val KEY_COMMANDS = "commands"
         const val KEY_LAST_PROFILE = "last_profile"
         const val KEY_LAST_MODE = "last_mode"
+        const val KEY_RECEIVE_PRERELEASES = "receive_prereleases"
 
         const val LEGACY_HOST = "host"
         const val LEGACY_PORT = "port"
