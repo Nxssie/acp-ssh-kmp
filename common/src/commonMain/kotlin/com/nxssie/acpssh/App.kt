@@ -110,7 +110,11 @@ fun App(terminalHost: TerminalHost, acpHost: AcpHost, store: ProfileStore, force
                 }
 
                 when (connection.status) {
-                    ConnectStatus.CONNECTED -> when (activeMode) {
+                    // RECONNECTING solo lo emite AcpSessionManager (reintento automático
+                    // tras un EOF de canal, ver AcpSessionManager.scheduleReconnect) — se
+                    // queda en la propia pantalla en vez de caer a la lista de perfiles,
+                    // que sería confuso mientras se reintenta solo en segundo plano.
+                    ConnectStatus.CONNECTED, ConnectStatus.RECONNECTING -> when (activeMode) {
                         AcpMode.TERMINAL -> TerminalScreen(terminalHost)
                         AcpMode.CHAT -> ChatScreen(acpHost)
                     }

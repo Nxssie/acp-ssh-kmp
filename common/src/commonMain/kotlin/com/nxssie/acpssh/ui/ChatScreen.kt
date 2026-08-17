@@ -83,6 +83,7 @@ import com.nxssie.acpssh.session.AcpSessionState
 import com.nxssie.acpssh.session.AcpTabState
 import com.nxssie.acpssh.session.ChatBubble
 import com.nxssie.acpssh.session.ChatRole
+import com.nxssie.acpssh.session.ConnectStatus
 import com.nxssie.acpssh.session.PlanEntryUi
 import com.nxssie.acpssh.session.PermissionUi
 import com.nxssie.acpssh.session.TimelineRef
@@ -99,6 +100,7 @@ fun ChatScreen(host: AcpHost) {
     val tabs by host.tabs.collectAsState()
     val activeTabId by host.activeTabId.collectAsState()
     val active = tabs.firstOrNull { it.tabId == activeTabId }
+    val connection by host.connection.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var limitNotice by remember { mutableStateOf(false) }
     var showRemoteSessions by remember { mutableStateOf(false) }
@@ -112,6 +114,26 @@ fun ChatScreen(host: AcpHost) {
     }
 
     Column(Modifier.fillMaxSize()) {
+        // Reintento automático en curso (AcpSessionManager.scheduleReconnect):
+        // el tab sigue montado (aunque vacío mientras dura, ver disconnectInternal)
+        // en vez de caer a la lista de perfiles — sin este aviso, ese hueco se
+        // veía como un cuelgue en vez de una reconexión en marcha.
+        if (connection.status == ConnectStatus.RECONNECTING) {
+            Surface(color = MaterialTheme.colorScheme.errorContainer) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        connection.error ?: "Reconectando…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
+        }
         // Sin tabs NO se monta la barra: ScrollableTabRow indexa
         // tabPositions[selectedTabIndex] en el indicador y con la lista vacía
         // lanza IndexOutOfBoundsException — era el crash al cerrar el último
@@ -281,9 +303,21 @@ private fun ChatContent(
         }
     }
 
+    // Firma del último item del timeline: antes solo se miraba
+    // `messages.lastOrNull()?.text?.length`, así que si lo último en aparecer
+    // era una tool call (no un mensaje) su `output` podía crecer en streaming
+    // sin disparar nunca el autoscroll de abajo — el chat se quedaba "clavado"
+    // mientras una tool call larga seguía escribiendo salida.
+    val lastContentSignature = when (val ref = state.timeline.lastOrNull()) {
+        is TimelineRef.Msg -> state.messages.getOrNull(ref.index)?.text?.length ?: 0
+        is TimelineRef.Tool -> state.toolCalls.firstOrNull { it.id == ref.id }
+            ?.let { it.status.hashCode() + (it.input?.length ?: 0) + (it.output?.length ?: 0) } ?: 0
+        null -> 0
+    }
+
     // Autoscroll al último item cuando llega contenido nuevo o streaming de
-    // texto (una tool call nueva ya cuenta como item nuevo vía totalItems).
-    LaunchedEffect(totalItems, state.messages.lastOrNull()?.text?.length) {
+    // texto/tool output (una tool call nueva ya cuenta como item nuevo vía totalItems).
+    LaunchedEffect(totalItems, lastContentSignature) {
         if (totalItems > 0 && stickToBottom.value) {
             listState.animateScrollToItem(totalItems - 1)
         }
@@ -725,70 +759,81 @@ private fun PlanCard(plan: List<PlanEntryUi>) {
 
 /**
  * A diferencia de [Bubble], una tool call no es contenido conversacional —
- * es telemetría de lo que el agente está haciendo. Antes usaba el mismo peso
- * visual que un mensaje (card a todo el ancho, surfaceContainerHigh) y con
- * varias tool calls seguidas se apilaban como una pared de cards igual de
- * llamativas que el propio texto, justo antes del input. Se recorta a un
- * ancho tipo burbuja y un estilo de chip discreto (fila fina, sin relleno de
- * card) — sigue "anclada" a su posición en el timeline, solo deja de competir
- * visualmente por atención salvo que se expanda a propósito.
+ * es telemetría de lo que el agente está haciendo, intercalada en el timeline
+ * junto a los mensajes que la rodean (mismo [TimelineRef] que ordena ambos).
+ * Sin card/borde propios (a diferencia de la versión anterior con
+ * `surfaceContainerLow`): una fila plana, icono + título + un glifo de estado
+ * discreto en vez de una etiqueta de texto — no debe competir visualmente con
+ * el contenido conversacional. El detalle de "qué hizo" se ve sin tocar nada
+ * vía la vista previa de una línea (output, o input si no hay output
+ * todavía); el diff, aunque haya, NUNCA se expande solo — requiere tocar la
+ * fila, igual que el input/output completos, para no llenar el chat de
+ * bloques de código por defecto en tareas con muchos archivos tocados.
  */
 @Composable
 private fun ToolCallCard(tool: ToolCallUi, onToggle: () -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-        Surface(
-            shape = MaterialTheme.shapes.small,
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            modifier = Modifier
-                .widthIn(max = 320.dp)
-                .clickable(onClick = onToggle),
-        ) {
-            Column(
-                Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(com.nxssie.acpssh.acp.ToolKind.icon(tool.kind), style = MaterialTheme.typography.labelMedium)
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        tool.title.ifEmpty { tool.id },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        ToolCallStatus.label(tool.status),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = statusColor(tool.status),
-                    )
-                }
-                if (tool.expanded) {
-                    tool.input?.let {
-                        Text("Entrada", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 12)
-                    }
-                    tool.diffs.forEach { diff ->
-                        DiffView(diff.path, diff.oldText, diff.newText)
-                    }
-                    tool.output?.let {
-                        Text("Salida", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 12)
-                    }
-                }
+    val hasDiffs = tool.diffs.isNotEmpty()
+    val previewSource = tool.output?.takeIf { it.isNotBlank() } ?: tool.input?.takeIf { it.isNotBlank() }
+    val hasDetail = hasDiffs || previewSource != null
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .let { if (hasDetail) it.clickable(onClick = onToggle) else it }
+            .padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                com.nxssie.acpssh.acp.ToolKind.icon(tool.kind),
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                tool.title.ifEmpty { tool.id },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(4.dp))
+            ToolStatusGlyph(tool.status)
+        }
+        when {
+            tool.expanded && hasDiffs -> tool.diffs.forEach { diff -> DiffView(diff.path, diff.oldText, diff.newText) }
+            tool.expanded -> {
+                tool.input?.takeIf { it.isNotBlank() }?.let { ToolDetailText(it) }
+                tool.output?.takeIf { it.isNotBlank() }?.let { ToolDetailText(it) }
             }
+            previewSource != null -> ToolDetailText(
+                previewSource.lineSequence().joinToString(" ") { it.trim() }.take(140),
+                maxLines = 1,
+            )
         }
     }
 }
 
 @Composable
-private fun statusColor(status: String?): Color = when (status) {
-    ToolCallStatus.COMPLETED -> Color(0xFF2E7D32)
-    ToolCallStatus.FAILED -> MaterialTheme.colorScheme.error
-    ToolCallStatus.IN_PROGRESS -> Color(0xFF1565C0)
-    else -> MaterialTheme.colorScheme.onSurfaceVariant
+private fun ToolStatusGlyph(status: String?) {
+    when (status) {
+        ToolCallStatus.IN_PROGRESS -> CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp)
+        ToolCallStatus.COMPLETED -> Text("✓", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2E7D32))
+        ToolCallStatus.FAILED -> Text("✗", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+        else -> {}
+    }
+}
+
+@Composable
+private fun ToolDetailText(text: String, maxLines: Int = 20) {
+    Text(
+        text,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(start = 18.dp),
+    )
 }
 
 @Composable
