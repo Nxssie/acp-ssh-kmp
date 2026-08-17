@@ -6,6 +6,7 @@ import com.nxssie.acpssh.acp.PermissionOutcome
 import com.nxssie.acpssh.acp.PermissionRequest
 import com.nxssie.acpssh.acp.RawByteChannel
 import com.nxssie.acpssh.acp.SshjExecRawChannel
+import com.nxssie.acpssh.notify.AcpNotifier
 import com.nxssie.acpssh.profile.ProfileStore
 import com.nxssie.acpssh.session.AcpHost
 import com.nxssie.acpssh.session.AcpSessionManager
@@ -17,6 +18,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.schmizz.sshj.SSHClient
 
@@ -33,11 +35,17 @@ class AndroidAcpHost(context: Context, profileStore: ProfileStore) : AcpHost {
     }
 
     private val secureStore = SecureStore(context)
+    private val notifier = AcpNotifier(context)
+
+    /** Tabs con `pendingPermission` ya notificados: evita renotificar en cada emisión de [AcpSessionManager.tabs] mientras siga pendiente (streaming, etc.). */
+    private val notifiedTabIds = mutableSetOf<String>()
 
     @Volatile private var verifier: TofuHostKeyVerifier? = null
 
+    private val hostScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     private val manager = AcpSessionManager(
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        scope = hostScope,
         connectSsh = { config, onHostKey ->
             val v = TofuHostKeyVerifier(secureStore, onHostKey)
             verifier = v
@@ -46,6 +54,29 @@ class AndroidAcpHost(context: Context, profileStore: ProfileStore) : AcpHost {
         loadSavedTabs = profileStore::loadSavedTabs,
         saveTabs = profileStore::saveTabs,
     )
+
+    init {
+        // Best-effort: mientras el proceso siga vivo en background (sin
+        // foreground service, Android puede matarlo en cualquier momento —
+        // ver AcpNotifier), avisa cuando un tab pasa a tener un
+        // `session/request_permission` pendiente que antes no tenía.
+        hostScope.launch {
+            manager.tabs.collect { tabs ->
+                val pendingNow = tabs.filter { it.session.pendingPermission != null }.map { it.tabId }.toSet()
+                for (tabId in pendingNow - notifiedTabIds) {
+                    val tab = tabs.first { it.tabId == tabId }
+                    notifier.notifyPermissionPending(
+                        tabId = tabId,
+                        agentName = tab.session.agentName,
+                        summary = tab.session.pendingPermission?.title ?: "Acción pendiente de confirmar",
+                    )
+                }
+                for (tabId in notifiedTabIds - pendingNow) notifier.cancel(tabId)
+                notifiedTabIds.clear()
+                notifiedTabIds.addAll(pendingNow)
+            }
+        }
+    }
 
     override val connection: StateFlow<ConnectionState> = manager.connection
     override val tabs: StateFlow<List<AcpTabState>> = manager.tabs

@@ -74,4 +74,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.security.crypto)
     implementation(libs.kotlinx.serialization.json)
+    // Notificación de "permiso pendiente" (AcpNotifier): NotificationCompat +
+    // detección de foreground vía ProcessLifecycleOwner.
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.process)
 }
