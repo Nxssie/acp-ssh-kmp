@@ -83,9 +83,20 @@ object RemoteAcpProcess {
      * y puede competir con el nuevo por el próximo mensaje que llegue (el
      * kernel entrega cada escritura del FIFO a un solo lector de los que estén
      * bloqueados, no a todos), perdiéndolo si se lo entrega al huérfano.
+     *
+     * También dispara `reap-acp-orphans.sh` en segundo plano (best-effort, no
+     * bloquea la toma del relevo): en `nxssie-terminal` el agente ACP
+     * (`claude-code-acp`) no mata su `claude` hijo anterior en cada resume, así
+     * que sin esto los huérfanos solo se limpian en el próximo barrido del
+     * timer del propio host (hasta varios minutos) — reconectar es el momento
+     * más probable de que haya un duplicado reciente, así que limpiar aquí
+     * también acorta esa ventana a "casi inmediato". No-op silencioso en
+     * cualquier servidor ACP que no tenga ese script (no es específico de este
+     * cliente, solo un acoplamiento operativo con ese host en concreto).
      */
     fun readerCommand(runDir: String): String =
         "cd ${shellQuote(runDir)} && " +
+            "{ /usr/local/bin/reap-acp-orphans.sh >/dev/null 2>&1 & } 2>/dev/null; " +
             "{ [ -f $READER_PID_FILE ] && kill \"\$(cat $READER_PID_FILE)\" 2>/dev/null; :; }; " +
             "echo \$\$ > $READER_PID_FILE; exec cat $STDOUT_FIFO"
 
