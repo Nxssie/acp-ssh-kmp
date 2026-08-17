@@ -782,7 +782,7 @@ private fun ToolCallCard(tool: ToolCallUi, onToggle: () -> Unit) {
             .padding(vertical = 2.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 com.nxssie.acpssh.acp.ToolKind.icon(tool.kind),
                 style = MaterialTheme.typography.labelSmall,
