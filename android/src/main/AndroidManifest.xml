@@ -10,6 +10,10 @@
          de ejecución obligatorio desde API 33; sin él, notify() no falla pero
          el sistema descarta la notificación en silencio. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- ConnectionService: mantiene la conexión SSH/ACP viva en background sin
+         las restricciones de red de Doze/App Standby (ver ConnectionService). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:label="ACP Terminal"
@@ -25,6 +29,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".ConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Expone el APK descargado (en cacheDir) al instalador del sistema
              sin exportar todo el cacheDir ni usar un content:// de terceros. -->
