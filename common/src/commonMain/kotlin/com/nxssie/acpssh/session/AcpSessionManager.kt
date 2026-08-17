@@ -16,8 +16,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
@@ -122,6 +124,15 @@ class AcpSessionManager(
     private var transport: AcpExecTransport? = null
     private var connectedConfig: TerminalConfig? = null
     private var connectJob: Job? = null
+    private var reconnectJob: Job? = null
+
+    /**
+     * `false` mientras haya un [disconnect] explícito del usuario en curso o
+     * reciente: un EOF de canal que llega justo después de que el usuario
+     * tocara "Salir" no debe relanzar reconexiones solo. Se reactiva en el
+     * siguiente [connect].
+     */
+    @Volatile private var autoReconnectEnabled = true
 
     /** sessionId+cwd por tab que YA arrancó sesión, para persistir y poder retomarla (`session/load`). */
     private val sessionRecords = mutableMapOf<String, SavedTabSession>()
@@ -143,6 +154,19 @@ class AcpSessionManager(
     @Volatile private var epoch = 0
 
     fun connect(config: TerminalConfig) {
+        autoReconnectEnabled = true
+        reconnectJob?.cancel()
+        reconnectJob = null
+        connectNow(config)
+    }
+
+    /**
+     * El intento de conexión en sí, sin tocar [reconnectJob]: lo llama tanto
+     * [connect] (entrada del usuario) como [scheduleReconnect] (reintento
+     * automático) — si este último llamara a [connect] en vez de esto, se
+     * cancelaría a sí mismo a mitad de su propio bucle.
+     */
+    private fun connectNow(config: TerminalConfig) {
         val myEpoch = ++epoch
         connectJob?.cancel()
         _connection.value = ConnectionState(ConnectStatus.CONNECTING)
@@ -220,6 +244,9 @@ class AcpSessionManager(
     }
 
     fun disconnect() {
+        autoReconnectEnabled = false
+        reconnectJob?.cancel()
+        reconnectJob = null
         epoch++
         connectJob?.cancel()
         connectJob = null
@@ -418,12 +445,50 @@ class AcpSessionManager(
         // que el resto de errores de conexión en vez de un "Conexión perdida"
         // desnudo, y queda en el log para poder revisarlo después.
         AppLog.w("tab-$tabId", "${ErrorOrigin.CONNECTION.label}: EOF inesperado en el canal remoto")
-        if (_connection.value.status == ConnectStatus.CONNECTED ||
-            _connection.value.status == ConnectStatus.CONNECTING
-        ) {
+        val config = connectedConfig
+        disconnectInternal()
+        if (autoReconnectEnabled && config != null) {
+            scheduleReconnect(config)
+        } else {
             _connection.value = ConnectionState(ConnectStatus.DISCONNECTED, error = "${ErrorOrigin.CONNECTION.label}: se perdió la conexión")
         }
-        disconnectInternal()
+    }
+
+    /**
+     * Reintenta [connectNow] con backoff exponencial (2s, 4s, 8s, 16s, 30s tope)
+     * hasta [MAX_RECONNECT_ATTEMPTS] veces. `session/load` (vía [sessionRecords]/
+     * [resumeInfo], ya poblados por el `connectNow` de más arriba) hace que cada
+     * tab recupere su historial en vez de arrancar una sesión nueva — el usuario
+     * no pierde la conversación por una caída de red pasajera. Se aborta sin
+     * más reintentos si el usuario desconecta/conecta a mano (usa
+     * [autoReconnectEnabled] en vez de [epoch]: un `connectNow` propio de este
+     * bucle también avanza `epoch`, así que comparar contra un valor fijo
+     * confundiría "seguimos reintentando" con "alguien más conectó").
+     */
+    private fun scheduleReconnect(config: TerminalConfig) {
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            for (attempt in 1..MAX_RECONNECT_ATTEMPTS) {
+                if (!autoReconnectEnabled) return@launch
+                val delayMs = (RECONNECT_BASE_DELAY_MS shl (attempt - 1)).coerceAtMost(RECONNECT_MAX_DELAY_MS)
+                _connection.value = ConnectionState(
+                    ConnectStatus.RECONNECTING,
+                    error = "Conexión perdida — reintentando en ${delayMs / 1000}s (intento $attempt/$MAX_RECONNECT_ATTEMPTS)…",
+                )
+                delay(delayMs)
+                if (!autoReconnectEnabled) return@launch
+                connectNow(config)
+                val result = connection.first {
+                    it.status == ConnectStatus.CONNECTED ||
+                        it.status == ConnectStatus.FAILED ||
+                        it.status == ConnectStatus.AWAITING_HOST_KEY
+                }
+                // CONNECTED: listo. AWAITING_HOST_KEY: la huella del host cambió,
+                // requiere confirmación explícita del usuario — no seguir
+                // reintentando por debajo mientras el diálogo espera respuesta.
+                if (result.status != ConnectStatus.FAILED) return@launch
+            }
+        }
     }
 
     private fun publishTab(tabId: String, state: AcpSessionState) {
@@ -684,5 +749,8 @@ class AcpSessionManager(
     companion object {
         const val DEFAULT_MAX_TABS = 5
         const val REMOTE_SESSIONS_TIMEOUT_MS = 15_000L
+        const val MAX_RECONNECT_ATTEMPTS = 5
+        const val RECONNECT_BASE_DELAY_MS = 2_000L
+        const val RECONNECT_MAX_DELAY_MS = 30_000L
     }
 }

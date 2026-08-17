@@ -4,7 +4,7 @@ import com.nxssie.acpssh.terminal.TerminalEmulator
 import com.nxssie.acpssh.terminal.TerminalState
 import kotlinx.coroutines.flow.StateFlow
 
-enum class ConnectStatus { DISCONNECTED, CONNECTING, AWAITING_HOST_KEY, CONNECTED, FAILED }
+enum class ConnectStatus { DISCONNECTED, CONNECTING, AWAITING_HOST_KEY, CONNECTED, RECONNECTING, FAILED }
 
 data class PendingHostKey(val algorithm: String, val fingerprint: String)
 
