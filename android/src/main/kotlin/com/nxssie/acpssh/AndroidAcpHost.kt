@@ -11,6 +11,7 @@ import com.nxssie.acpssh.profile.ProfileStore
 import com.nxssie.acpssh.session.AcpHost
 import com.nxssie.acpssh.session.AcpSessionManager
 import com.nxssie.acpssh.session.AcpTabState
+import com.nxssie.acpssh.session.ConnectStatus
 import com.nxssie.acpssh.session.ConnectionState
 import com.nxssie.acpssh.session.RemoteSessionsUi
 import com.nxssie.acpssh.session.TerminalConfig
@@ -71,8 +72,17 @@ class AndroidAcpHost(context: Context, profileStore: ProfileStore) : AcpHost {
                         summary = tab.session.pendingPermission?.title ?: "Acción pendiente de confirmar",
                     )
                 }
-                for (tabId in notifiedTabIds - pendingNow) notifier.cancel(tabId)
-                notifiedTabIds.clear()
+                // `tabs` se vacía por un instante en cada reconexión automática
+                // (AcpSessionManager.disconnectInternal, disparado por
+                // scheduleReconnect) — eso NO significa que el usuario haya
+                // respondido el permiso, así que cancelar aquí sin más borraba
+                // la notificación casi al instante en cuanto la conexión
+                // parpadeaba. Solo se cancela con la conexión ya CONNECTED,
+                // cuando "ya no está pendiente" es de fiar.
+                if (manager.connection.value.status == ConnectStatus.CONNECTED) {
+                    for (tabId in notifiedTabIds - pendingNow) notifier.cancel(tabId)
+                    notifiedTabIds.clear()
+                }
                 notifiedTabIds.addAll(pendingNow)
             }
         }
