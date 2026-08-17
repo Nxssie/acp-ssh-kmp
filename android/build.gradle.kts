@@ -70,6 +70,9 @@ android {
 dependencies {
     implementation(project(":common"))
     implementation(libs.androidx.activity.compose)
+    // Loading state mientras MainActivity espera el bind de ConnectionService.
+    implementation(libs.compose.foundation)
+    implementation(libs.compose.material3)
     implementation(libs.sshj)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.security.crypto)
